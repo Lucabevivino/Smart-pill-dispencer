@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net">
   <diagram name="Page-1" id="eRLOAziMpCSZHwJDcKBX">
-    <mxGraphModel dx="5275" dy="2948" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+    <mxGraphModel dx="1605" dy="516" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -13,7 +13,7 @@
         <mxCell id="Mp5znEjbBrCuJhRYFTgk-13" parent="Mp5znEjbBrCuJhRYFTgk-16" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;" value="" vertex="1">
           <mxGeometry height="380" width="380" as="geometry" />
         </mxCell>
-        <mxCell id="Mp5znEjbBrCuJhRYFTgk-15" parent="Mp5znEjbBrCuJhRYFTgk-16" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Battery Interface (Rechargeable)&lt;/font&gt;" vertex="1">
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-15" parent="Mp5znEjbBrCuJhRYFTgk-16" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Micro USB Charger&lt;/font&gt;" vertex="1">
           <mxGeometry height="110" width="234" x="73" y="50" as="geometry" />
         </mxCell>
         <mxCell id="Mp5znEjbBrCuJhRYFTgk-20" parent="Mp5znEjbBrCuJhRYFTgk-16" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Battery Management" vertex="1">
