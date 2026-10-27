@@ -1,0 +1,3 @@
+#include "protocol.h"
+
+const uint8_t ESPNOW_BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
