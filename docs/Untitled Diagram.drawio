@@ -1,0 +1,158 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="eRLOAziMpCSZHwJDcKBX">
+    <mxGraphModel dx="1605" dy="516" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="de4frLLplnHOzDPYjFBF-5" parent="1" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 30px;&quot;&gt;Central Hub&lt;/font&gt;" vertex="1">
+          <mxGeometry height="240" width="450" x="250" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-16" connectable="0" parent="1" style="group" value="" vertex="1">
+          <mxGeometry height="380" width="380" x="910" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-13" parent="Mp5znEjbBrCuJhRYFTgk-16" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;" value="" vertex="1">
+          <mxGeometry height="380" width="380" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-15" parent="Mp5znEjbBrCuJhRYFTgk-16" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Micro USB Charger&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="234" x="73" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-20" parent="Mp5znEjbBrCuJhRYFTgk-16" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Battery Management" vertex="1">
+          <mxGeometry height="30" width="130" x="125" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-17" edge="1" parent="1" source="de4frLLplnHOzDPYjFBF-5" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-6" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <mxPoint x="1120" y="460" as="sourcePoint" />
+            <mxPoint x="1280" y="460" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-18" edge="1" parent="1" source="de4frLLplnHOzDPYjFBF-5" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-13" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <mxPoint x="1120" y="460" as="sourcePoint" />
+            <mxPoint x="1280" y="460" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-21" parent="1" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Central Hub - High Level Architecture&lt;/h1&gt;&lt;p&gt;High level definition of the Central Hub&amp;nbsp; Architecture, which is composed from three subcategories, Platform,&amp;nbsp; User Interface and Battery Management components&lt;/p&gt;" vertex="1">
+          <mxGeometry height="170" width="510" x="-480" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-22" parent="1" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;" value="" vertex="1">
+          <mxGeometry height="380" width="440" x="255" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-23" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Platform" vertex="1">
+          <mxGeometry height="30" width="60" x="445" y="500" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-30" parent="1" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Esp32-Microcontroller&amp;nbsp;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="355" y="540" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-31" connectable="0" parent="1" style="group" value="" vertex="1">
+          <mxGeometry height="380" width="620" x="-460" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-6" parent="Mp5znEjbBrCuJhRYFTgk-31" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="" vertex="1">
+          <mxGeometry height="380" width="620" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-1" parent="Mp5znEjbBrCuJhRYFTgk-31" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;div&gt;&lt;font style=&quot;font-size: 20px;&quot;&gt;Button&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="30" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="de4frLLplnHOzDPYjFBF-7" parent="Mp5znEjbBrCuJhRYFTgk-31" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;LCD Display&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="30" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-2" parent="Mp5znEjbBrCuJhRYFTgk-31" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Potentiometer&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="350" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-19" parent="Mp5znEjbBrCuJhRYFTgk-31" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="User Interface" vertex="1">
+          <mxGeometry height="30" width="154" x="236" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-51" parent="Mp5znEjbBrCuJhRYFTgk-31" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Barcode Scanner&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="350" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-32" edge="1" parent="1" source="de4frLLplnHOzDPYjFBF-5" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-22" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <mxPoint x="300" y="390" as="sourcePoint" />
+            <mxPoint x="460" y="390" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-33" parent="1" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 30px;&quot;&gt;Node&lt;/font&gt;" vertex="1">
+          <mxGeometry height="240" width="450" x="250" y="1160" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-34" connectable="0" parent="1" style="group" value="" vertex="1">
+          <mxGeometry height="380" width="380" x="1200" y="1600" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-35" parent="Mp5znEjbBrCuJhRYFTgk-34" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;" value="" vertex="1">
+          <mxGeometry height="380" width="380" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-36" parent="Mp5znEjbBrCuJhRYFTgk-34" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Battery Interface (Coin battery)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="234" x="73" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-37" parent="Mp5znEjbBrCuJhRYFTgk-34" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Battery Management" vertex="1">
+          <mxGeometry height="30" width="130" x="125" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-38" edge="1" parent="1" source="Mp5znEjbBrCuJhRYFTgk-33" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-45" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <mxPoint x="1120" y="1570" as="sourcePoint" />
+            <mxPoint x="1280" y="1570" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-39" edge="1" parent="1" source="Mp5znEjbBrCuJhRYFTgk-33" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-35" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <mxPoint x="1120" y="1570" as="sourcePoint" />
+            <mxPoint x="1280" y="1570" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-40" parent="1" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Node - High Level Architecture&lt;/h1&gt;&lt;p&gt;High level definition of the Node&amp;nbsp; Architecture, which is composed from four subcategories, Platform,&amp;nbsp; User Interface, Sensors and Battery Management components&lt;/p&gt;" vertex="1">
+          <mxGeometry height="170" width="510" x="-480" y="1180" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-41" parent="1" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;" value="" vertex="1">
+          <mxGeometry height="380" width="440" x="255" y="1600" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-42" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Platform" vertex="1">
+          <mxGeometry height="30" width="60" x="445" y="1610" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-43" parent="1" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Esp32-Microcontroller&amp;nbsp;&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="355" y="1650" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-44" connectable="0" parent="1" style="group" value="" vertex="1">
+          <mxGeometry height="380" width="620" x="-450" y="1600" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-45" parent="Mp5znEjbBrCuJhRYFTgk-44" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="" vertex="1">
+          <mxGeometry height="380" width="620" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-47" parent="Mp5znEjbBrCuJhRYFTgk-44" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;LED&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="30" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-48" parent="Mp5znEjbBrCuJhRYFTgk-44" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;Buzzer&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="240" x="350" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-49" parent="Mp5znEjbBrCuJhRYFTgk-44" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="User Interface" vertex="1">
+          <mxGeometry height="30" width="154" x="236" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-50" edge="1" parent="1" source="Mp5znEjbBrCuJhRYFTgk-33" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-41" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <mxPoint x="300" y="1500" as="sourcePoint" />
+            <mxPoint x="460" y="1500" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-52" edge="1" parent="1" source="Mp5znEjbBrCuJhRYFTgk-33" style="endArrow=open;html=1;endSize=12;startArrow=diamondThin;startSize=14;startFill=1;edgeStyle=orthogonalEdgeStyle;align=left;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="Mp5znEjbBrCuJhRYFTgk-54" value="1">
+          <mxGeometry relative="1" x="-1" y="3" as="geometry">
+            <Array as="points">
+              <mxPoint x="475" y="1500.5" />
+              <mxPoint x="940" y="1500.5" />
+            </Array>
+            <mxPoint x="430" y="1571" as="sourcePoint" />
+            <mxPoint x="850" y="1601" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-53" connectable="0" parent="1" style="group" value="" vertex="1">
+          <mxGeometry height="380" width="380" x="750" y="1600" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-54" parent="Mp5znEjbBrCuJhRYFTgk-53" style="rounded=1;whiteSpace=wrap;html=1;roundedPerimeter=1;" value="" vertex="1">
+          <mxGeometry height="380" width="380" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-55" parent="Mp5znEjbBrCuJhRYFTgk-53" style="shape=ext;double=1;rounded=1;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 20px;&quot;&gt;IR sensor (tentative)&lt;/font&gt;" vertex="1">
+          <mxGeometry height="110" width="234" x="73" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Mp5znEjbBrCuJhRYFTgk-56" parent="Mp5znEjbBrCuJhRYFTgk-53" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Sensors" vertex="1">
+          <mxGeometry height="30" width="130" x="125" y="10" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
