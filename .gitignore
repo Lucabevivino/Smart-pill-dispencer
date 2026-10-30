@@ -3,6 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+.include/wifi_config.h
 
 # Local Claude Code guidance — not part of the repository
 CLAUDE.md

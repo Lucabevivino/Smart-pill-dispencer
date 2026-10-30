@@ -4,10 +4,8 @@
 #include "node_management.h"
 #include "protocol.h"
 #include "hub_comms.h"
-
+#include "wifi_config.h"
 // --- Network / time configuration (edit these) -------------------------------
-#define WIFI_SSID          "your-ssid"
-#define WIFI_PASSWORD      "your-password"
 #define TZ_GMT_OFFSET_SEC  3600    // e.g. +3600 = UTC+1 (CET)
 #define TZ_DST_OFFSET_SEC  3600    // daylight saving, 0 if unused
 
@@ -51,7 +49,7 @@
 // Navigation buttons (active-low: button -> GND, internal pull-up).
 #define BUTTON_UP      13   // previous view / go back (inside a view)
 #define BUTTON_DOWN    14   // next view
-#define BUTTON_SELECT  2    // enter the highlighted view
+#define BUTTON_SELECT  12    // enter the highlighted view
 
 
 #define MAX_NAME_LEN 5
