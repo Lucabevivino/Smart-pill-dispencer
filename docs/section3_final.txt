@@ -1,0 +1,34 @@
+III. METHOD
+
+The proposed system is designed around the three limitations identified in Section II: most dispensers require storing loose pills outside their original packaging [7], [8], [17], [19], rely on bulky dispensing mechanisms that limit portability [10], [17], and verify intake through simple mechanical triggers [8], [18]. We propose a modular architecture composed of a Central Hub, used to configure and supervise the therapy, and one or more Nodes, small clips attached directly to the original medicine packages. This section describes the requirements, architecture, operating logic, detection algorithm and power management of the system, and its innovative aspects.
+
+A. Design Requirements
+Four functional requirements were derived from the reviewed literature:
+R1 – Original packaging: the device works on the original box, keeping label, dosage and expiry date visible, with no pill transfer.
+R2 – Modularity and compactness: one small device per medicine, so the system scales with the therapy without dispensing actuators.
+R3 – Reliable intake detection: package openings are detected automatically, limiting false positives.
+R4 – Simplicity of use: progressive acoustic and visual prompts, and configuration through a physical interface rather than a smartphone, addressing the accessibility issues highlighted in [5].
+
+B. System Overview and Design Rationale
+A single Hub manages N Nodes, one per medicine package (Fig. 2), communicating via ESP-NOW, a connectionless protocol on the 2.4 GHz radio. This split follows from the requirements: R1 and R2 require the device on the box to be small and light, leaving no room for a display or input controls, while R4 requires a complete configuration interface. Moving the interface to a single central base keeps each Node minimal and offers elderly users a simple physical device. The Hub stores the full schedule, while each Node stores only its own dose times, so reminders continue even if the link to the Hub is temporarily lost.
+
+C. Central Hub Architecture
+The Hub (Fig. 3) consists of three subsystems. The Platform is an ESP32 microcontroller that stores the schedule, keeps the reference time and coordinates the Nodes. The User Interface includes a barcode scanner, which identifies the medicine from the code printed on its box; an LCD display, which shows menus, upcoming doses and the status of each Node; a potentiometer, used to scroll through menus and set dose times; and a push button, used to confirm selections. The Hub has no battery and is powered by a USB charger. Configuration takes four steps: the user scans the box, sets the dose times, pairs a Node, and the Hub transfers the schedule to it.
+
+D. Node Architecture
+The Node (Fig. 4) is the clip mounted on the medicine box. Its Platform is an ESP32-C3, chosen for its integrated ESP-NOW radio, small footprint and low deep-sleep current. The User Interface consists of an LED and a buzzer. The Sensors subsystem is an infrared (IR) proximity sensor on the inner side of the clip, facing the box flap. Battery Management consists of a small rechargeable LiPo battery, whose voltage is read through a voltage divider.
+
+E. Hub–Node Communication
+Three message types are exchanged. At registration, the Hub sends the Node a configuration packet with the pill ID and the daily schedule. Every hour, the Node receives a time update that resynchronizes its local RTC and corrects the drift of its internal oscillator. In the opposite direction, the Node reports each dose outcome (taken or missed) and, at every synchronization, its battery level, so that the Hub can show a low-battery warning on the LCD.
+
+F. Operating Logic
+Each Node runs the finite-state machine (FSM) of Fig. 5. In SLEEP the ESP32-C3 is in deep sleep; every hour it briefly enters SYNC. At the scheduled dose time it enters ALERT: the LED blinks and the buzzer sounds. It then moves to WAIT and monitors the IR sensor. If no opening is detected within 5 minutes, ESCALATE repeats the alert and returns to WAIT; this interval is adjustable from the Hub. An opening within the 30-minute dose window leads to TAKEN, and the timestamped event is sent to the Hub. If the window expires, the Node enters MISSED and the missed dose is shown on the LCD, where it can be reviewed by the caregiver. Both states return to SLEEP. Openings outside the dose window are ignored, so that a patient checking how many pills are left is not counted as an intake.
+
+G. Intake Detection
+IR proximity sensing is contactless and requires no modification of the box, unlike reed-switch solutions [8], [18], which need a magnet on the moving part. When the clip is attached, the Node stores a "closed" baseline reading, recalibrated whenever it is paired with a new medicine, as boxes differ in material and geometry. To improve robustness, the state of the box is confirmed at every stage rather than assumed (Fig. 6). The algorithm first verifies that the box has been CLOSED for at least T_c; otherwise, a distinct close-box reminder is issued, since a box left open would prevent the next intake from being detected. Once the closed state is confirmed, a candidate opening is reported when the reading deviates from the baseline by more than a threshold, and accepted as valid only if the box remains OPEN for at least T_o, which filters disturbances such as the box being moved. After a valid opening, the event is sent to the Hub and the box must be confirmed closed again before a new opening can be counted. Like most systems in Section II, the Node detects access to the medicine rather than ingestion. T_c, T_o and the threshold are set experimentally in Section IV.
+
+H. Power Management
+The Node wakes only at dose times and for the hourly synchronization. The IR sensor is powered only from the dose time until the box is confirmed closed, and the radio only for the messages of Subsection E. ESP-NOW is preferred to standard Wi-Fi, used in [18], because short packets are exchanged without connecting to an access point, which minimizes radio-on time. The number of wake-ups therefore determines the Node's autonomy between recharges, measured in Section IV.
+
+I. Innovative Aspects
+Unlike [16] and [20], which keep the original packaging but rely on a dock or load cells, the system works on any medicine box with a clip (R1), scales by adding Nodes without dispensing mechanisms (R2), detects openings without modifying the box (R3), and is configured without a smartphone (R4).
