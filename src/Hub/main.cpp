@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <LiquidCrystal.h>
+#include <Preferences.h>
 #include "view_management.h"
 #include "node_management.h"
 #include "protocol.h"
@@ -59,6 +60,7 @@
 struct pill_data {
     char name[MAX_NAME_LEN + 1];   // nickname + terminator
     uint8_t taken;
+    uint8_t missed;
     uint8_t total;
     uint8_t remaining;
     uint8_t node_id;               // 1-based clip id (0 = unassigned)
@@ -74,12 +76,50 @@ char view_1[15] = "";
 char view_2[15] = "";
 int pill_registered = 0;
 
+// --- Pill list persistence (NVS via Preferences) ---
+// The whole contiguous pill_list array is stored as one blob plus a count so it
+// survives a hub reboot. `pill_data` has no padding (all members are byte-sized
+// or packed), so the raw struct round-trips cleanly.
+
+void pill_list_save(void) {
+    Preferences prefs;
+    if (!prefs.begin("pills", false)) {
+        return;
+    }
+    prefs.putInt("cnt", pill_registered);
+    if (pill_registered > 0) {
+        prefs.putBytes("list", pill_list, pill_registered * sizeof(pill_data));
+    }
+    prefs.end();
+}
+
+void pill_list_load(void) {
+    Preferences prefs;
+    if (!prefs.begin("pills", true)) {
+        return;
+    }
+    int n = prefs.getInt("cnt", 0);
+    if (n > 0) {
+        pill_list = (pill_data*)realloc(pill_list, n * sizeof(pill_data));
+        size_t got = prefs.getBytes("list", pill_list, n * sizeof(pill_data));
+        if (got == (size_t)n * sizeof(pill_data)) {
+            pill_registered = n;
+        } else {
+            free(pill_list);
+            pill_list = NULL;
+            pill_registered = 0;   // size mismatch — don't trust a partial load
+        }
+    }
+    prefs.end();
+}
+
 // --- Pill list helpers ---
 
 void pill_list_add(const pill_data* pill) {
     pill_list = (pill_data*)realloc(pill_list, (pill_registered + 1) * sizeof(pill_data));
     pill_list[pill_registered] = *pill;
     pill_registered++;
+    pill_list_save();
 }
 
 void pill_list_remove(int index) {
@@ -87,6 +127,7 @@ void pill_list_remove(int index) {
         pill_list[i] = pill_list[i + 1];
     }
     pill_registered--;
+    pill_list_save();
 }
 
 int total_intakes() {
@@ -146,12 +187,11 @@ void function1(void* arg1, void* arg2, void* arg3, void* arg4) {
         lcd.print(pill->name);
 
         lcd.setCursor(0, 1);
-        lcd.print("Tkn ");
-        lcd.print(pill->taken);
-        lcd.print("/");
-        lcd.print(pill->total);
-        lcd.print(" Lft ");
-        lcd.print(pill->remaining);
+        char line[17];
+        snprintf(line, sizeof(line), "Tkn%u Msd%u Lf%u",
+                 (unsigned)pill->taken, (unsigned)pill->missed,
+                 (unsigned)pill->remaining);
+        lcd.print(line);
 
         char btn = read_buttons();
         if (btn == 'U') {
@@ -196,6 +236,7 @@ void function2(void* arg1, void* arg2, void* arg3, void* arg4) {
     pending_pill.total = (uint8_t)select_value("Pills per box", 30, 1, 99, 1);
     pending_pill.remaining = pending_pill.total;
     pending_pill.taken = 0;
+    pending_pill.missed = 0;
 
     // 4) Configure the pill's weekly schedule.
     configure_schedule(&pending_pill.schedule);
@@ -226,7 +267,7 @@ void function3(void* arg1, void* arg2, void* arg3, void* arg4) {
     pill_data* pill = &pill_list[index];
 
     // Tell the user to clip the new box onto this pill's blinking clip.
-    // (The ESP-NOW "start blinking" message is not implemented yet.)
+    hub_comms_blink(pill->node_id, 10);
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("Clip new box on");
@@ -236,6 +277,9 @@ void function3(void* arg1, void* arg2, void* arg3, void* arg4) {
     while (read_buttons() != 'S') {}   // SELECT = new box clipped
 
     pill->remaining = pill->total;
+    pill->taken = 0;
+    pill->missed = 0;
+    pill_list_save();
 
     lcd.clear();
     lcd.setCursor(0, 0);
@@ -311,11 +355,81 @@ Menu* setup_views(){
     return view1;
 }
 
+// Find a pill by its clip node id, or NULL.
+pill_data* find_pill_by_node(int node_id) {
+    for (int i = 0; i < pill_registered; i++) {
+        if (pill_list[i].node_id == node_id) {
+            return &pill_list[i];
+        }
+    }
+    return NULL;
+}
+
+// Drain adherence events the clips reported and apply them to the pill list /
+// display. Called from the button loop and the top of loop() so events are
+// handled even while the UI is blocked on a button press.
+void handle_hub_events(void) {
+    uint8_t type, node_id;
+    while (hub_comms_take_event(&type, &node_id)) {
+        pill_data* pill;
+        switch (type) {
+        case MSG_TAKEN:
+            pill = find_pill_by_node(node_id);
+            if (pill != NULL) {
+                if (pill->taken < pill->total) {
+                    pill->taken++;
+                }
+                if (pill->remaining > 0) {
+                    pill->remaining--;
+                }
+                Serial.print("[hub] ");
+                Serial.print(pill->name);
+                Serial.print(" taken (tkn ");
+                Serial.print((int)pill->taken);
+                Serial.print(", left ");
+                Serial.print((int)pill->remaining);
+                Serial.println(")");
+                pill_list_save();
+            } else {
+                Serial.printf("[hub] taken from unknown node #%d\n", (int)node_id);
+            }
+            break;
+
+        case MSG_MISSED:
+            pill = find_pill_by_node(node_id);
+            if (pill != NULL) {
+                pill->missed++;
+                Serial.print("[hub] ");
+                Serial.print(pill->name);
+                Serial.print(" missed (now ");
+                Serial.print((int)pill->missed);
+                Serial.println(")");
+                pill_list_save();
+            } else {
+                Serial.printf("[hub] missed from unknown node #%d\n", (int)node_id);
+            }
+            break;
+
+        case MSG_BOX_OPEN:
+            Serial.printf("[hub] box open on node #%d\n", (int)node_id);
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Box open!");
+            lcd.setCursor(0, 1);
+            lcd.print("Clip #");
+            lcd.print((int)node_id);
+            delay(2000);   // transient warning; next redraw restores the view
+            break;
+        }
+    }
+}
+
 // Block until one of the three buttons is pressed and released.
 // Returns 'U' (up), 'D' (down) or 'S' (select).
 char read_buttons() {
     while (true) {
         hub_comms_loop();   // keep comms alive while the UI blocks on buttons
+        handle_hub_events();
 
         if (digitalRead(BUTTON_UP) == LOW) {
             delay(50);                                      // debounce
@@ -559,6 +673,9 @@ Menu* menu_head = NULL;
 void setup() {
     Serial.begin(115200);
 
+    node_restore();       // reload clip registry from NVS (survives reboot)
+    pill_list_load();     // reload pill list from NVS
+
     pinMode(BUTTON_UP, INPUT_PULLUP);     // buttons -> GND, internal pull-up
     pinMode(BUTTON_DOWN, INPUT_PULLUP);
     pinMode(BUTTON_SELECT, INPUT_PULLUP);
@@ -593,6 +710,7 @@ void setup() {
 
 void loop() {
     hub_comms_loop();   // beacons, NTP, peer registration, time requests
+    handle_hub_events();
 
     if (menu_head != NULL) {
         navigate_views(menu_head);

@@ -21,17 +21,24 @@ bool hub_comms_begin(const char* ssid, const char* password,
 void hub_comms_loop(void);
 
 // Assign node `node_id` (1-based) the given schedule plus the current time.
-// Returns true if the message was queued.
+// Queued for reliable delivery (retried until the clip ACKs). Returns true if
+// the message was queued.
 bool hub_comms_assign(int node_id, const week_schedule* schedule);
 
-// Make node `node_id` blink for `seconds` (used while adding a pill).
+// Make node `node_id` blink for `seconds` (used while adding a pill). Reliable.
 bool hub_comms_blink(int node_id, uint8_t seconds);
 
-// Tell node `node_id` it has been removed.
+// Tell node `node_id` it has been removed. Reliable.
 bool hub_comms_remove(int node_id);
 
 // Current synced local time. Returns false if the clock is not synced yet.
 bool hub_comms_now(hub_time* out);
+
+// Drain the next adherence event the hub received from a clip (MSG_TAKEN,
+// MSG_MISSED or MSG_BOX_OPEN). Returns true and fills `type` + `node_id` if one
+// is pending. Events are queued (not single-slot), so simultaneous clips don't
+// clobber each other.
+bool hub_comms_take_event(uint8_t* type, uint8_t* node_id);
 
 #ifdef __cplusplus
 }

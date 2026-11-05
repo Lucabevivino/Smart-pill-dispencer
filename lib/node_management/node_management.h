@@ -38,6 +38,11 @@ int node_get_mac(int id, uint8_t mac_out[6]);
 // nodes forgotten. Assigned nodes are left alone (a pill still references them).
 int node_forget_stale(uint32_t now_ms, uint32_t stale_ms);
 
+// Restore the registry from NVS (call once at boot). No-op if nothing was
+// persisted or the flash is unreadable. `last_seen` is reset so unassigned nodes
+// re-announce before they are pruned.
+void node_restore(void);
+
 #ifdef __cplusplus
 }
 #endif

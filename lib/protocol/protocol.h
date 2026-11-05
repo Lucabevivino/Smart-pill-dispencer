@@ -52,23 +52,44 @@ typedef enum {
     MSG_TIME_REQUEST  = 5,  // node -> hub      : "send me the current time"
     MSG_TIME_RESPONSE = 6,  // hub -> node      : current time
     MSG_REMOVE        = 7,  // hub -> node      : clear id/schedule/alarms
+    MSG_ACK           = 8,  // general acknowledgement
+    MSG_TAKEN         = 9,  // node -> hub      : pill taken (adherence)
+    MSG_MISSED        = 10, // node -> hub      : pill missed (intake window expired)
+    MSG_BOX_OPEN      = 11  // node -> hub      : box left open > grace period
 } hub_msg_type;
 
 #define PROTOCOL_VERSION 1
 
 // Every message starts with a `type` byte so the receiver can dispatch on it.
+//
+// Reliably-delivered messages carry a `seq` byte (assigned by the sender and
+// echoed by the ACK). The receiver uses it to de-duplicate retransmissions and
+// the sender uses it to match an ACK to the frame it frees. Because both ends
+// are built from this same header and there is no version check on receive,
+// a protocol change means the hub and clip must be reflashed together.
 typedef struct __attribute__((packed)) { uint8_t type; uint8_t version; } beacon_msg;
 typedef struct __attribute__((packed)) { uint8_t type; uint8_t version; } hello_msg;
-typedef struct __attribute__((packed)) { uint8_t type; uint8_t seconds; } blink_msg;
+typedef struct __attribute__((packed)) { uint8_t type; uint8_t seq; uint8_t seconds; } blink_msg;
 typedef struct __attribute__((packed)) {
     uint8_t      type;
+    uint8_t      seq;
     uint8_t      node_id;
     hub_time     time;
     week_schedule schedule;
 } assign_msg;
 typedef struct __attribute__((packed)) { uint8_t type; } time_request_msg;
-typedef struct __attribute__((packed)) { uint8_t type; hub_time time; } time_response_msg;
-typedef struct __attribute__((packed)) { uint8_t type; uint8_t node_id; } remove_msg;
+typedef struct __attribute__((packed)) { uint8_t type; uint8_t seq; hub_time time; } time_response_msg;
+typedef struct __attribute__((packed)) { uint8_t type; uint8_t seq; uint8_t node_id; } remove_msg;
+typedef struct __attribute__((packed)) {
+    uint8_t type;        // MSG_ACK
+    uint8_t seq;         // seq of the message being acknowledged
+    uint8_t msg_to_ack;  // which message type is being acknowledged
+    uint8_t node_id;     // the node id this ack pertains to
+} ack_msg;
+typedef struct __attribute__((packed)) { uint8_t type; uint8_t seq; uint8_t node_id; } taken_msg;
+typedef struct __attribute__((packed)) { uint8_t type; uint8_t seq; uint8_t node_id; } missed_msg;
+typedef struct __attribute__((packed)) { uint8_t type; uint8_t seq; uint8_t node_id; } box_open_msg;
+
 
 // ESP-NOW broadcast address (FF:FF:FF:FF:FF:FF).
 extern const uint8_t ESPNOW_BROADCAST_MAC[6];
