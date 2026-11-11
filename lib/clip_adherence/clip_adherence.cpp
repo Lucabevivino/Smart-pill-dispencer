@@ -9,14 +9,57 @@
 #include "clip_comms.h"
 
 // ---------------------------------------------------------------------------
-// Sensor — there is no physical sensor yet. When CLIP_SENSOR_SIMULATED is 1 the
-// reading is forced by CLIP_SENSOR_SIM_OPEN (flip it and re-flash to test each
-// path). Otherwise the real GPIO is read.
+// Box sensor. Pick ONE backend in CLIP_SENSOR_TYPE. The reference build has no
+// sensor wired, so it defaults to CLIP_SENSOR_SIMULATED; when you have hardware,
+// switch CLIP_SENSOR_TYPE to one of the two real backends below. The sensor pin
+// itself is configured in src/Clip/main.cpp (CLIP_ADHERENCE_SENSOR_PIN) and
+// passed to clip_adherence_begin(); set it to the ADC pin you wired the sensor to.
+//
+//   CLIP_SENSOR_SIMULATED        - reading forced to CLIP_SENSOR_SIM_OPEN (flip
+//                                  it and re-flash to test each path). No GPIO.
+//
+//   CLIP_SENSOR_PHOTOTRANSISTOR  - ambient-light sensor on the sensor pin: a
+//                                  phototransistor or a photoresistor (LDR) —
+//                                  both form the same light-driven voltage
+//                                  divider. The box is OPEN when the lid is up
+//                                  and light reaches the sensor, i.e. the ADC
+//                                  reading rises above the threshold:
+//                                  adc > CLIP_SENSOR_LIGHT_THRESHOLD.
+//
+//   CLIP_SENSOR_IR_REFLECTIVE    - reflective IR sensor (IR LED + IR photo-
+//                                  transistor, e.g. TCRT5000) on the sensor pin.
+//                                  With the box CLOSED a surface sits in front of
+//                                  the sensor and the IR bounces back; OPEN the
+//                                  box and nothing reflects, so the return signal
+//                                  disappears:
+//                                  adc < CLIP_SENSOR_REFLECT_THRESHOLD.
+//
+// Both real backends are read with analogRead(), so the sensor pin must be an
+// ADC-capable GPIO (GPIO0..GPIO4 on the ESP32-C3; avoid GPIO2, a strapping pin).
 // ---------------------------------------------------------------------------
-#define CLIP_SENSOR_SIMULATED   1
-#define CLIP_SENSOR_SIM_OPEN    false   // true = box open, false = box closed
-#define CLIP_SENSOR_PIN         8       // physical sensor input (simulation off)
-#define CLIP_SENSOR_OPEN_LEVEL  LOW     // active level of the physical sensor
+#define CLIP_SENSOR_SIMULATED       0
+#define CLIP_SENSOR_PHOTOTRANSISTOR 1
+#define CLIP_SENSOR_IR_REFLECTIVE   2
+
+#define CLIP_SENSOR_TYPE            CLIP_SENSOR_SIMULATED
+
+#define CLIP_SENSOR_SIM_OPEN        false   // true = box open, false = box closed
+
+// ADC thresholds (raw 12-bit, 0..4095). Calibrate against your sensor + wiring:
+// temporarily set CLIP_SENSOR_DEBUG to 1 to stream the raw value over serial.
+// If your particular sensor/wiring inverts the response (light or reflection
+// pulls the ADC the other way), flip the comparison in sensor_raw_open().
+#define CLIP_SENSOR_LIGHT_THRESHOLD   1500  // phototransistor: open when above
+#define CLIP_SENSOR_REFLECT_THRESHOLD 1500  // IR reflective:   open when below
+
+// A raw reading must hold steady this long before it is trusted (debounce). A
+// real sensor near its threshold flickers; this keeps the state machine from
+// chattering between open/closed.
+#define CLIP_SENSOR_DEBOUNCE_MS     20
+
+// Print the raw ADC reading (and resulting open state) every ~500 ms to help
+// tune the thresholds above. Set back to 0 once the sensor is calibrated.
+#define CLIP_SENSOR_DEBUG           0
 
 // --- tuning ---
 #define INTAKE_WINDOW_MINUTES   30      // how long the user has to take the pill
@@ -38,7 +81,7 @@ typedef enum {
     INTAKE_MISSED
 } intake_state_t;
 
-static uint8_t sensor_pin = CLIP_SENSOR_PIN;
+static uint8_t sensor_pin = 0;   // set by clip_adherence_begin()
 
 static bool have_schedule = false;
 static week_schedule schedule;
@@ -54,13 +97,36 @@ static uint32_t open_since_ms = 0;
 
 // --- helpers ---
 
+// Immediate (raw) sensor reading, mapped to "box is open". No debounce.
+static bool sensor_raw_open(void) {
+    switch (CLIP_SENSOR_TYPE) {
+    case CLIP_SENSOR_PHOTOTRANSISTOR:
+        return analogRead(sensor_pin) > CLIP_SENSOR_LIGHT_THRESHOLD;
+    case CLIP_SENSOR_IR_REFLECTIVE:
+        return analogRead(sensor_pin) < CLIP_SENSOR_REFLECT_THRESHOLD;
+    case CLIP_SENSOR_SIMULATED:
+    default:
+        return CLIP_SENSOR_SIM_OPEN;
+    }
+}
+
+// Debounced sensor state — the value the state machine acts on. A raw reading
+// only becomes the reported state after it has held steady for
+// CLIP_SENSOR_DEBOUNCE_MS, filtering out electrical noise / mechanical bounce.
+static bool debounced_open = false;
+static bool debounce_candidate = false;
+static uint32_t debounce_since_ms = 0;
+
 static bool sensor_is_open(void) {
-#if CLIP_SENSOR_SIMULATED
-    (void)sensor_pin;
-    return CLIP_SENSOR_SIM_OPEN;
-#else
-    return digitalRead(sensor_pin) == CLIP_SENSOR_OPEN_LEVEL;
-#endif
+    bool raw = sensor_raw_open();
+    if (raw != debounce_candidate) {
+        debounce_candidate = raw;
+        debounce_since_ms = millis();
+    }
+    if (millis() - debounce_since_ms >= CLIP_SENSOR_DEBOUNCE_MS) {
+        debounced_open = debounce_candidate;
+    }
+    return debounced_open;
 }
 
 // Read the local clock (set by clip_comms on MSG_ASSIGN) into `out`. Returns
@@ -136,9 +202,17 @@ static time_t find_active_intake(const hub_time* now, time_t now_epoch) {
 
 void clip_adherence_begin(uint8_t pin) {
     sensor_pin = pin;
-#if !CLIP_SENSOR_SIMULATED
-    pinMode(sensor_pin, INPUT_PULLUP);
-#endif
+    if (CLIP_SENSOR_TYPE != CLIP_SENSOR_SIMULATED) {
+        analogReadResolution(12);   // thresholds above are expressed on 0..4095
+        pinMode(sensor_pin, INPUT); // ADC; analogRead() configures the channel
+    }
+
+    // Reset the debounce filter so a stale reading from a previous boot (or a
+    // re-begin() after a deep-sleep wake) doesn't survive into this run.
+    debounced_open = false;
+    debounce_candidate = false;
+    debounce_since_ms = 0;
+
     box_state = BOX_CLOSED;
     intake_state = INTAKE_WAITING;
     handled_intake_epoch = (time_t)-1;
@@ -159,6 +233,20 @@ void clip_adherence_set_schedule(const week_schedule* sched) {
 }
 
 void clip_adherence_loop(void) {
+#if CLIP_SENSOR_DEBUG
+    // Stream the raw ADC value unconditionally so the sensor can be tested and
+    // calibrated without a hub or a schedule (the state machine below only runs
+    // once a schedule is assigned).
+    if (CLIP_SENSOR_TYPE != CLIP_SENSOR_SIMULATED) {
+        static uint32_t last_sensor_debug_ms = 0;
+        uint32_t now_ms = millis();
+        if (now_ms - last_sensor_debug_ms >= 500) {
+            last_sensor_debug_ms = now_ms;
+            Serial.printf("[clip] sensor raw=%d\n", analogRead(sensor_pin));
+        }
+    }
+#endif
+
     if (!have_schedule) {
         clip_alarm_stop();
         box_state = BOX_CLOSED;
@@ -241,4 +329,59 @@ void clip_adherence_loop(void) {
         // else keep sounding until the box is closed.
         break;
     }
+}
+
+// Epoch of "Monday 00:00:00" of the week containing `now_epoch` (local time).
+// Mirrors monday_epoch_of() above but derives the week from an epoch directly.
+static time_t monday_epoch_from_epoch(time_t now_epoch) {
+    struct tm* t = localtime(&now_epoch);
+    if (t == NULL) {
+        return (time_t)-1;
+    }
+    struct tm tm = *t;
+    int weekday = (tm.tm_wday + 6) % 7;   // 0 = Monday
+    tm.tm_hour = 0;
+    tm.tm_min  = 0;
+    tm.tm_sec  = 0;
+    tm.tm_isdst = 0;
+    time_t midnight = mktime(&tm);
+    if (midnight == (time_t)-1) {
+        return (time_t)-1;
+    }
+    return midnight - (time_t)weekday * 86400;
+}
+
+time_t clip_adherence_next_intake(time_t now_epoch) {
+    if (!have_schedule) {
+        return (time_t)-1;
+    }
+    time_t monday = monday_epoch_from_epoch(now_epoch);
+    if (monday == (time_t)-1) {
+        return (time_t)-1;
+    }
+
+    time_t best = (time_t)-1;
+    for (int week = 0; week < 2; week++) {   // this week, then next (wrap)
+        time_t base = monday + (time_t)week * 7 * 86400;
+        for (int d = 0; d < DAYS_PER_WEEK; d++) {
+            const day_schedule* ds = &schedule.days[d];
+            for (int i = 0; i < ds->count && i < MAX_INTAKES_PER_DAY; i++) {
+                time_t e = base
+                         + (time_t)d * 86400
+                         + (time_t)ds->hours[i] * 3600
+                         + (time_t)ds->minutes[i] * 60;
+                if (e > now_epoch && (best == (time_t)-1 || e < best)) {
+                    best = e;
+                }
+            }
+        }
+        if (best != (time_t)-1) {
+            break;   // the earliest future intake is in the first week that has one
+        }
+    }
+    return best;
+}
+
+bool clip_adherence_active(void) {
+    return box_state != BOX_CLOSED;
 }

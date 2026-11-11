@@ -35,6 +35,10 @@ extern "C" {
 #define RELIABLE_QUEUE_SIZE 8
 #endif
 
+// Marks a queue as "ours" (a valid persisted queue) vs. a cold boot (zeroed).
+// Public so an owner (the hub) can stamp a restored queue before reliable_init.
+#define RELIABLE_TX_MAGIC 0x52545821u   // "RTX!"
+
 typedef struct {
     bool     used;           // slot holds a queued frame
     uint8_t  dst[6];         // destination MAC
@@ -45,7 +49,7 @@ typedef struct {
     uint32_t next_retry_ms;  // millis() deadline for the next (re)transmit
 } reliable_frame_t;
 
-typedef struct {
+typedef struct reliable_tx {
     // magic distinguishes a valid RTC-memory queue from a cold boot (zeroed).
     uint32_t magic;
     reliable_frame_t frames[RELIABLE_QUEUE_SIZE];
@@ -53,6 +57,10 @@ typedef struct {
     uint32_t base_retry_ms;         // e.g. 1000
     uint32_t max_retry_ms;          // e.g. 30000 (retry forever at this cap)
     bool (*send_fn)(const uint8_t* dst, const uint8_t* data, uint8_t len);
+    // Optional: called after any queue mutation (enqueue / ACK-free). The owner
+    // uses it to persist the queue (the hub writes NVS); the clip leaves it NULL
+    // because its queue already lives in RTC memory. Not touched by reliable_init.
+    void (*persist_fn)(const struct reliable_tx* t);
 } reliable_tx_t;
 
 // Initialize. Re-points `send_fn` and resets timing, but keeps any queued frames

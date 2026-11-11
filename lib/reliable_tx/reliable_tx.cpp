@@ -3,8 +3,6 @@
 #include <Arduino.h>     // millis()
 #include <esp_random.h>  // esp_random()
 
-#define RELIABLE_TX_MAGIC 0x52545821u   // "RTX!" — marks the queue as ours
-
 // Backoff for the next retry after `attempts` transmissions already happened:
 // base, 2*base, 4*base, … capped at max_retry_ms.
 static uint32_t backoff_ms(const reliable_tx_t* t, uint8_t attempts) {
@@ -79,6 +77,9 @@ bool reliable_send(reliable_tx_t* t, const uint8_t* dst, const void* data, uint8
         f->attempts = 1;
         f->next_retry_ms = millis() + backoff_ms(t, f->attempts);
     }
+    if (t->persist_fn != NULL) {
+        t->persist_fn(t);   // the queue changed — let the owner persist it
+    }
     return true;
 }
 
@@ -115,6 +116,9 @@ void reliable_on_ack(reliable_tx_t* t, uint8_t seq) {
         reliable_frame_t* f = &t->frames[i];
         if (f->used && f->seq == seq) {
             f->used = false;   // delivered — free the slot
+            if (t->persist_fn != NULL) {
+                t->persist_fn(t);   // the queue changed — let the owner persist it
+            }
             return;
         }
     }

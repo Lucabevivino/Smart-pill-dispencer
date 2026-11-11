@@ -676,6 +676,16 @@ void setup() {
     node_restore();       // reload clip registry from NVS (survives reboot)
     pill_list_load();     // reload pill list from NVS
 
+    // Reconcile the clip registry with the pill list (the source of truth). A
+    // node can only stay "assigned" while some pill still references it; this
+    // frees nodes left reserved by an interrupted "Add a pill" (e.g. a reset
+    // before the pill was saved).
+    for (int id = 1; id <= MAX_NODES; id++) {
+        if (node_is_assigned(id) && find_pill_by_node(id) == NULL) {
+            node_release(id);
+        }
+    }
+
     pinMode(BUTTON_UP, INPUT_PULLUP);     // buttons -> GND, internal pull-up
     pinMode(BUTTON_DOWN, INPUT_PULLUP);
     pinMode(BUTTON_SELECT, INPUT_PULLUP);

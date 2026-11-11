@@ -52,6 +52,11 @@ static uint8_t last_time_seq = 0;
 // we keep re-sending HELLO so the hub never prunes us as "stale".
 static uint32_t last_hello_ms = 0;
 
+// Time re-sync state. last_resync_epoch survives deep sleep (persisted below);
+// time_resynced is a per-wake flag set when a fresh time arrives this boot.
+static time_t last_resync_epoch = 0;
+static bool   time_resynced = false;
+
 // Reliable outbound queue (adherence events). RTC slow memory so a pending
 // "pill taken" survives deep sleep; on a cold power cycle RTC is zeroed and the
 // queue starts empty (same model as the persist block below).
@@ -70,6 +75,7 @@ RTC_DATA_ATTR static struct {
     uint8_t  channel;
     bool     assigned;
     week_schedule schedule;
+    int64_t  last_resync_epoch;   // wall-clock epoch of the last time sync
     uint8_t  crc;
 } persist = {0};
 
@@ -89,6 +95,7 @@ static void persist_save(void) {
     persist.channel  = channel;
     persist.assigned = assigned;
     memcpy(&persist.schedule, &schedule, sizeof(schedule));
+    persist.last_resync_epoch = last_resync_epoch;
 
     persist.magic = CLIP_STATE_MAGIC;
     persist.crc = state_checksum((const uint8_t*)persist.hub_mac,
@@ -110,6 +117,7 @@ static bool persist_restore(void) {
     channel  = persist.channel;
     assigned = persist.assigned;
     memcpy(&schedule, &persist.schedule, sizeof(schedule));
+    last_resync_epoch = persist.last_resync_epoch;
 
     bool mac_set = false;
     for (int i = 0; i < 6; i++) {
@@ -207,6 +215,20 @@ static bool send_ack(uint8_t msg_to_ack, uint8_t seq) {
     return true;
 }
 
+// Send a bare MSG_TIME_REQUEST (best-effort). The hub answers with a reliable
+// MSG_TIME_RESPONSE, so a lost request just means the clip retries next wake.
+static bool send_time_request(void) {
+    if (!hub_found) {
+        return false;
+    }
+    if (!ensure_hub_peer()) {
+        return false;
+    }
+    time_request_msg m;
+    m.type = MSG_TIME_REQUEST;
+    return esp_now_send(hub_mac, (const uint8_t*)&m, sizeof(m)) == ESP_OK;
+}
+
 // Send function the reliable queue uses to transmit one frame to the hub.
 static bool clip_reliable_send_fn(const uint8_t* dst, const uint8_t* data, uint8_t len) {
     if (!ensure_hub_peer()) {
@@ -243,6 +265,7 @@ static void handle_assign(const assign_msg* a) {
         Serial.printf("[clip] RTC set to %d-%02d-%02d %02d:%02d:%02d\n",
                       (int)a->time.year, (int)a->time.mon, (int)a->time.mday,
                       (int)a->time.hour, (int)a->time.min, (int)a->time.sec);
+        last_resync_epoch = time(NULL);
     } else {
         Serial.println("[clip] RTC not set (no valid time in assign)");
     }
@@ -283,6 +306,9 @@ static void handle_time_response(const time_response_msg* t) {
         Serial.printf("[clip] RTC re-synced to %d-%02d-%02d %02d:%02d:%02d\n",
                       (int)t->time.year, (int)t->time.mon, (int)t->time.mday,
                       (int)t->time.hour, (int)t->time.min, (int)t->time.sec);
+        last_resync_epoch = time(NULL);
+        time_resynced = true;
+        persist_save();
     }
     send_ack(MSG_TIME_RESPONSE, t->seq);
 }
@@ -522,6 +548,11 @@ bool clip_comms_is_connected(void) {
     return hub_found;
 }
 
+void clip_comms_forget_hub(void) {
+    hub_found = false;
+    memset(hub_mac, 0, sizeof(hub_mac));
+}
+
 bool clip_comms_is_registered(void) {
     return hub_ack;
 }
@@ -555,6 +586,40 @@ void clip_comms_hub_mac(uint8_t out[6]) {
 
 uint8_t clip_comms_channel(void) {
     return channel;
+}
+
+// --- time re-sync ---
+
+bool clip_comms_request_time_sync(uint32_t timeout_ms) {
+    if (!hub_found) {
+        return false;
+    }
+    time_resynced = false;
+    uint32_t start = millis();
+    uint32_t last_req = 0;
+    while (millis() - start < timeout_ms) {
+        if (millis() - last_req >= 500) {
+            last_req = millis();
+            send_time_request();
+        }
+        clip_comms_loop();   // drains MSG_TIME_RESPONSE -> handle_time_response
+        if (time_resynced) {
+            return true;
+        }
+        delay(10);
+    }
+    return false;
+}
+
+time_t clip_comms_last_resync_epoch(void) {
+    return last_resync_epoch;
+}
+
+bool clip_comms_resync_due(time_t now_epoch) {
+    if (last_resync_epoch == 0) {
+        return true;   // never synced — re-sync at the first opportunity
+    }
+    return (now_epoch - last_resync_epoch) >= (time_t)CLIP_RESYNC_INTERVAL_SEC;
 }
 
 // --- adherence event sends ---

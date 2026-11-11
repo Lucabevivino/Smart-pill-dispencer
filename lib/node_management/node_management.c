@@ -59,6 +59,13 @@ void node_release(int id) {
     }
 }
 
+int node_is_assigned(int id) {
+    if (id < 1 || id > MAX_NODES) {
+        return 0;
+    }
+    return nodes[id - 1].assigned;
+}
+
 int node_register(const uint8_t mac[6], uint32_t now_ms) {
     // Refresh an already-known MAC.
     for (int i = 0; i < MAX_NODES; i++) {

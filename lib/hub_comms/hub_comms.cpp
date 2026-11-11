@@ -9,10 +9,14 @@
 #include <esp_wifi.h>
 #include <time.h>
 #include <string.h>
+#include "nvs.h"
+#include "esp_err.h"
 
 // --- tuning ---
 #define HUB_TICK_INTERVAL_MS       100     // min gap between housekeeping runs
-#define HUB_BEACON_INTERVAL_MS     5000    // how often to poll for new nodes
+#define HUB_BEACON_INTERVAL_MS     250     // poll for new nodes; keep < the clip's
+                                           // CLIP_SCAN_DWELL_MS so one dwell reliably
+                                           // catches a beacon while the clip hops channels
 #define HUB_STALE_NODE_MS          30000   // unassigned node considered gone
 #define HUB_WIFI_RETRY_INTERVAL_MS 10000
 #define HUB_ESPNOW_FALLBACK_CHANNEL 1
@@ -45,9 +49,51 @@ static volatile uint8_t event_tail = 0;   // next read slot (main loop)
 // retransmission: we re-ACK it but do not apply it again.
 static uint8_t last_adherence_seq[MAX_NODES + 1];
 
-// Reliable outbound queue (assign / blink / remove / time response). Plain RAM:
-// the hub is mains-powered and its durable state lives in NVS already.
+// Reliable outbound queue (assign / blink / remove / time response). Persisted
+// to NVS so an un-ACKed message survives a hub reboot (the clip de-dups by seq,
+// so a re-sent message after reboot is harmless).
 static reliable_tx_t tx;
+
+#define HUB_TX_NVS_NAMESPACE "txq"
+#define HUB_TX_NVS_KEY       "queue"
+
+// Persistent portion of the queue. send_fn / base / max / attempts / retry
+// deadlines are volatile and re-established by reliable_init on restore.
+typedef struct {
+    uint32_t         magic;
+    uint8_t          next_seq;
+    reliable_frame_t frames[RELIABLE_QUEUE_SIZE];
+} hub_tx_persist_t;
+
+static void hub_tx_save(const reliable_tx_t* t) {
+    nvs_handle_t h;
+    if (nvs_open(HUB_TX_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    hub_tx_persist_t p;
+    memset(&p, 0, sizeof(p));
+    p.magic    = RELIABLE_TX_MAGIC;
+    p.next_seq = t->next_seq;
+    memcpy(p.frames, t->frames, sizeof(p.frames));
+    nvs_set_blob(h, HUB_TX_NVS_KEY, &p, sizeof(p));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void hub_tx_restore(reliable_tx_t* t) {
+    nvs_handle_t h;
+    if (nvs_open(HUB_TX_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return;   // nothing persisted yet — reliable_init will cold-boot the queue
+    }
+    hub_tx_persist_t p;
+    size_t len = sizeof(p);
+    if (nvs_get_blob(h, HUB_TX_NVS_KEY, &p, &len) == ESP_OK && len == sizeof(p)) {
+        t->next_seq = p.next_seq;
+        memcpy(t->frames, p.frames, sizeof(t->frames));
+        t->magic = RELIABLE_TX_MAGIC;   // reliable_init will keep the frames
+    }
+    nvs_close(h);
+}
 
 // --- helpers ---
 
@@ -214,7 +260,9 @@ bool hub_comms_begin(const char* ssid, const char* password,
     esp_now_register_recv_cb(on_data_recv);
     esp_now_register_send_cb(on_data_sent);
 
+    hub_tx_restore(&tx);                 // load any queue persisted before a reboot
     reliable_init(&tx, reliable_send_fn);
+    tx.persist_fn = hub_tx_save;         // persist the queue on every change
 
     esp_now_peer_info_t bcast;
     memset(&bcast, 0, sizeof(bcast));

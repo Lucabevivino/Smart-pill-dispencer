@@ -26,6 +26,9 @@ int node_reserve_free(void);
 // re-assigned later).
 void node_release(int id);
 
+// True if node `id` (1-based) is currently marked assigned.
+int node_is_assigned(int id);
+
 // Register a node that sent a HELLO: refresh its slot if the MAC is already
 // known, otherwise claim the first undiscovered slot. Returns the 1-based id,
 // or 0 if the registry is full.
