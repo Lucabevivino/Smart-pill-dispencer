@@ -1,0 +1,3 @@
+# photodiode manual samples | 2026-11-13T17:12:59 | port=/dev/cu.usbmodem1101 baud=115200
+# timestamp,angle,raw0,raw4,delta,state,threshold,millis
+2026-11-13T17:13:20.409,87,141,4095,3954,0,1500,1781794

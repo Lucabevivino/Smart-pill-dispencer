@@ -31,6 +31,7 @@ static bool ready = false;              // true once ESP-NOW + broadcast peer ar
 // Assignment state.
 static bool assigned = false;
 static week_schedule schedule;
+static volatile bool schedule_changed = false;   // set by ASSIGN / REMOVE handlers
 
 // Inbound ring: the ESP-NOW callback buffers ASSIGN / BLINK / REMOVE /
 // TIME_RESPONSE and adherence ACKs here; the main loop drains them.
@@ -43,10 +44,11 @@ static uint8_t pending_blink_seconds = 0;
 // Per-type de-dup of hub->clip reliable messages. Each type has its own counter
 // because the hub's seq is shared across types, so an interleaved retransmit of
 // an earlier ASSIGN must still be recognized even after a later BLINK arrived.
-static uint8_t last_assign_seq = 0;
-static uint8_t last_blink_seq = 0;
-static uint8_t last_remove_seq = 0;
-static uint8_t last_time_seq = 0;
+// 0xFF (never a real seq) = "nothing seen yet" sentinel.
+static uint8_t last_assign_seq = 0xFF;
+static uint8_t last_blink_seq = 0xFF;
+static uint8_t last_remove_seq = 0xFF;
+static uint8_t last_time_seq = 0xFF;
 
 // Re-announcement state. The hub releases us with MSG_REMOVE; while unassigned
 // we keep re-sending HELLO so the hub never prunes us as "stale".
@@ -61,6 +63,25 @@ static bool   time_resynced = false;
 // "pill taken" survives deep sleep; on a cold power cycle RTC is zeroed and the
 // queue starts empty (same model as the persist block below).
 RTC_DATA_ATTR static reliable_tx_t tx = {0};
+
+// Adherence events that could not be queued yet (hub unknown, or the reliable
+// queue was full) are remembered here and flushed once we can. One bit per type
+// is enough for a single clip: at most one TAKEN / MISSED / BOX_OPEN is pending
+// between re-syncs. RTC-backed so a retained event survives deep sleep.
+#define PENDING_TAKEN    (1u << 0)
+#define PENDING_MISSED   (1u << 1)
+#define PENDING_BOX_OPEN (1u << 2)
+RTC_DATA_ATTR static uint8_t pending_events = 0;
+
+// Defined later (adherence-event sends); forward-declared so clip_comms_loop
+// can flush retained events.
+static void flush_pending_events(void);
+
+// Battery sensing. battery_pin == 0xFF disables reading (reports 0 mV). The
+// ESP32-C3 ADC is ~3.3 V full-scale, so the divider ratio scales the raw reading
+// back up to the actual battery voltage.
+static uint8_t battery_pin = 0xFF;
+static float   battery_divider = 1.0f;
 
 // --- deep-sleep persistence (RTC slow memory) --------------------------------
 // RTC_DATA_ATTR keeps this block in RTC slow memory, which survives deep sleep
@@ -90,6 +111,9 @@ static uint8_t state_checksum(const uint8_t* p, size_t n) {
 }
 
 static void persist_save(void) {
+    // Zero everything first so the padding bytes (covered by the checksum range)
+    // are deterministic, not whatever RTC memory happened to hold.
+    memset(&persist, 0, sizeof(persist));
     memcpy(persist.hub_mac, hub_mac, 6);
     persist.node_id  = node_id;
     persist.channel  = channel;
@@ -257,6 +281,7 @@ static void handle_assign(const assign_msg* a) {
     node_id = a->node_id;
     memcpy(&schedule, &a->schedule, sizeof(schedule));
     assigned = true;
+    schedule_changed = true;
 
     Serial.print("[clip] assigned node #");
     Serial.println((int)node_id);
@@ -272,6 +297,10 @@ static void handle_assign(const assign_msg* a) {
 
     send_ack(MSG_ASSIGN, a->seq);
     persist_save();
+
+    // Report battery on the fresh pairing so the hub has a reading immediately,
+    // rather than waiting for the first hourly re-sync.
+    clip_comms_send_battery();
 }
 
 static void handle_blink(const blink_msg* b) {
@@ -291,6 +320,7 @@ static void handle_remove(const remove_msg* r) {
     }
     assigned = false;
     memset(&schedule, 0, sizeof(schedule));
+    schedule_changed = true;
     last_hello_ms = 0;   // announce again immediately
     Serial.println("[clip] removed by hub - free again");
     send_ack(MSG_REMOVE, r->seq);
@@ -328,8 +358,11 @@ static void on_data_recv(const uint8_t* mac, const uint8_t* data, int len) {
     }
     switch (data[0]) {
     case MSG_BEACON:
-        memcpy(hub_mac, mac, 6);
-        hub_found = true;   // set after the MAC is written
+        if (len >= (int)sizeof(beacon_msg) &&
+            ((const beacon_msg*)data)->version == PROTOCOL_VERSION) {
+            memcpy(hub_mac, mac, 6);
+            hub_found = true;   // set after the MAC is written
+        }
         break;
     case MSG_ACK:
         if (len >= (int)sizeof(ack_msg)) {
@@ -535,6 +568,9 @@ void clip_comms_loop(void) {
     // Retransmit any adherence events still awaiting the hub's ACK.
     reliable_loop(&tx);
 
+    // Flush any adherence events retained while the hub was unknown / queue full.
+    flush_pending_events();
+
     // While known to the hub but unassigned, keep re-announcing so the hub
     // doesn't prune our slot as stale (it forgets unassigned nodes it hasn't
     // heard from in HUB_STALE_NODE_MS).
@@ -549,6 +585,11 @@ bool clip_comms_is_connected(void) {
 }
 
 void clip_comms_forget_hub(void) {
+    if (hub_found) {
+        // Drop the stale peer so a re-discovered hub (new channel / MAC) isn't
+        // blocked by an old peer entry still pinned to the previous channel.
+        esp_now_del_peer(hub_mac);
+    }
     hub_found = false;
     memset(hub_mac, 0, sizeof(hub_mac));
 }
@@ -567,6 +608,14 @@ bool clip_comms_is_assigned(void) {
 
 const week_schedule* clip_comms_schedule(void) {
     return assigned ? &schedule : NULL;
+}
+
+bool clip_comms_take_schedule_changed(void) {
+    if (!schedule_changed) {
+        return false;
+    }
+    schedule_changed = false;
+    return true;
 }
 
 bool clip_comms_take_blink(uint8_t* seconds) {
@@ -622,27 +671,102 @@ bool clip_comms_resync_due(time_t now_epoch) {
     return (now_epoch - last_resync_epoch) >= (time_t)CLIP_RESYNC_INTERVAL_SEC;
 }
 
+// --- battery reporting ---
+
+void clip_comms_set_battery(uint8_t pin, float divider) {
+    battery_pin = pin;
+    battery_divider = divider;
+    if (battery_pin != 0xFF) {
+        analogReadResolution(12);      // 0..4095
+        pinMode(battery_pin, INPUT);
+    }
+}
+
+static uint16_t read_battery_mv(void) {
+    if (battery_pin == 0xFF) {
+        return 0;
+    }
+    int raw = analogRead(battery_pin);
+    float mv = (float)raw * 3300.0f / 4095.0f * battery_divider;
+    if (mv < 0.0f) {
+        mv = 0.0f;
+    } else if (mv > 65535.0f) {
+        mv = 65535.0f;
+    }
+    return (uint16_t)mv;
+}
+
+bool clip_comms_send_battery(void) {
+    if (!hub_found) {
+        return false;
+    }
+    battery_msg m;
+    m.type = MSG_BATTERY;
+    m.seq = 0;          // stamped by reliable_send
+    m.node_id = node_id;
+    m.mv = read_battery_mv();
+
+    Serial.printf("[clip] battery %u mV\n", (unsigned)m.mv);
+    return reliable_send(&tx, hub_mac, &m, sizeof(m));
+}
+
 // --- adherence event sends ---
 
 // Queue a minimal (type, seq, node_id) adherence message for reliable delivery.
 // Returns false only if the hub is unknown or the queue is full; otherwise the
 // event is retained and retried until the hub acknowledges it.
+// Queue a minimal (type, seq, node_id) adherence message for reliable delivery.
+// Returns false only if the hub is unknown or the queue is full; in that case
+// the event is retained (pending_events) and flushed by clip_comms_loop().
 static bool send_node_event(uint8_t type) {
-    if (!hub_found) {
-        return false;
-    }
-
-    // All three adherence messages share this 3-byte layout (type + seq + node).
-    struct {
-        uint8_t type;
-        uint8_t seq;
-        uint8_t node_id;
-    } __attribute__((packed)) m;
+    // taken_msg / missed_msg / box_open_msg share the same packed 3-byte layout
+    // (type, seq, node_id); use the shared typedef so the clip and hub parser
+    // can never drift apart.
+    taken_msg m;
     m.type = type;
     m.seq = 0;         // stamped by reliable_send
     m.node_id = node_id;
 
-    return reliable_send(&tx, hub_mac, &m, sizeof(m));
+    uint8_t bit;
+    switch (type) {
+    case MSG_TAKEN:    bit = PENDING_TAKEN;    break;
+    case MSG_MISSED:   bit = PENDING_MISSED;   break;
+    case MSG_BOX_OPEN: bit = PENDING_BOX_OPEN; break;
+    default:           bit = 0;                break;
+    }
+
+    if (!hub_found || !reliable_send(&tx, hub_mac, &m, sizeof(m))) {
+        if (bit != 0) {
+            pending_events |= bit;   // retain for a later flush
+        }
+        return false;
+    }
+    return true;
+}
+
+// Send any adherence events that were retained because the hub was unknown or
+// the queue was full. Called from the main loop once discovery/registration is
+// healthy again.
+static void flush_pending_events(void) {
+    if (!hub_found || pending_events == 0) {
+        return;
+    }
+    static const struct { uint8_t bit; uint8_t type; } pend[] = {
+        {PENDING_TAKEN,    MSG_TAKEN},
+        {PENDING_MISSED,   MSG_MISSED},
+        {PENDING_BOX_OPEN, MSG_BOX_OPEN},
+    };
+    for (unsigned i = 0; i < sizeof(pend) / sizeof(pend[0]); i++) {
+        if (pending_events & pend[i].bit) {
+            taken_msg m;
+            m.type = pend[i].type;
+            m.seq = 0;
+            m.node_id = node_id;
+            if (reliable_send(&tx, hub_mac, &m, sizeof(m))) {
+                pending_events &= (uint8_t)~pend[i].bit;
+            }
+        }
+    }
 }
 
 bool clip_comms_send_taken(void) {

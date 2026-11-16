@@ -4,14 +4,15 @@
 #include <time.h>
 #include <string.h>
 #include <limits.h>
+#include <esp_attr.h>   // RTC_DATA_ATTR
 
 #include "clip_alarm.h"
 #include "clip_comms.h"
 
 // ---------------------------------------------------------------------------
-// Box sensor. Pick ONE backend in CLIP_SENSOR_TYPE. The reference build has no
-// sensor wired, so it defaults to CLIP_SENSOR_SIMULATED; when you have hardware,
-// switch CLIP_SENSOR_TYPE to one of the two real backends below. The sensor pin
+// Box sensor. Pick ONE backend in CLIP_SENSOR_TYPE. The system ships with the
+// reflective IR backend enabled (CLIP_SENSOR_IR_REFLECTIVE); switch CLIP_SENSOR_TYPE
+// below if you change the sensor. The sensor pin
 // itself is configured in src/Clip/main.cpp (CLIP_ADHERENCE_SENSOR_PIN) and
 // passed to clip_adherence_begin(); set it to the ADC pin you wired the sensor to.
 //
@@ -31,8 +32,10 @@
 //                                  With the box CLOSED a surface sits in front of
 //                                  the sensor and the IR bounces back; OPEN the
 //                                  box and nothing reflects, so the return signal
-//                                  disappears:
-//                                  adc < CLIP_SENSOR_REFLECT_THRESHOLD.
+//                                  disappears. The "open" level is derived from a
+//                                  stored closed baseline (re-sampled on pairing),
+//                                  so it adapts to the box's surface/geometry:
+//                                  adc < baseline - CLIP_SENSOR_REFLECT_MARGIN.
 //
 // Both real backends are read with analogRead(), so the sensor pin must be an
 // ADC-capable GPIO (GPIO0..GPIO4 on the ESP32-C3; avoid GPIO2, a strapping pin).
@@ -41,7 +44,7 @@
 #define CLIP_SENSOR_PHOTOTRANSISTOR 1
 #define CLIP_SENSOR_IR_REFLECTIVE   2
 
-#define CLIP_SENSOR_TYPE            CLIP_SENSOR_SIMULATED
+#define CLIP_SENSOR_TYPE            CLIP_SENSOR_IR_REFLECTIVE
 
 #define CLIP_SENSOR_SIM_OPEN        false   // true = box open, false = box closed
 
@@ -50,7 +53,12 @@
 // If your particular sensor/wiring inverts the response (light or reflection
 // pulls the ADC the other way), flip the comparison in sensor_raw_open().
 #define CLIP_SENSOR_LIGHT_THRESHOLD   1500  // phototransistor: open when above
-#define CLIP_SENSOR_REFLECT_THRESHOLD 1500  // IR reflective:   open when below
+#define CLIP_SENSOR_REFLECT_THRESHOLD 1500  // IR reflective: open when below (fallback)
+
+// For IR reflective, "open" = reading drops this far below the stored closed
+// baseline. Re-calibrated on pairing; CLIP_SENSOR_REFLECT_THRESHOLD is only the
+// fallback until a baseline has been sampled.
+#define CLIP_SENSOR_REFLECT_MARGIN    500
 
 // A raw reading must hold steady this long before it is trusted (debounce). A
 // real sensor near its threshold flickers; this keeps the state machine from
@@ -64,6 +72,7 @@
 // --- tuning ---
 #define INTAKE_WINDOW_MINUTES   30      // how long the user has to take the pill
 #define BOX_OPEN_GRACE_MS       15000   // wait before flagging a box left open
+#define CLIP_ESCALATE_AFTER_SEC 300     // 5 min (design doc) before escalating
 
 #define INTAKE_WINDOW_SECONDS   (INTAKE_WINDOW_MINUTES * 60)
 
@@ -93,7 +102,49 @@ static intake_state_t intake_state = INTAKE_WAITING;
 // none. Using epoch instead of week-minute makes each weekly occurrence unique.
 static time_t handled_intake_epoch = (time_t)-1;
 
+// Millis at which the current intake's prompt (siren) started — drives the
+// escalation timer.
+static uint32_t intake_armed_ms = 0;
+
 static uint32_t open_since_ms = 0;
+
+// ---------------------------------------------------------------------------
+// RTC-persisted adherence state. Survives deep sleep (but not a power cycle,
+// where RTC memory is zeroed and magic == 0 means "nothing remembered"):
+//   - last_settled_epoch : every scheduled intake at epoch <= this is settled
+//     (consumed, missed, or currently being handled) — used to report MISSED
+//     for windows the clip slept straight through.
+//   - closed_baseline    : IR "closed" reading sampled at the last pairing.
+// ---------------------------------------------------------------------------
+#define ADHERENCE_RTC_MAGIC 0x41444852u   // "ADHR"
+
+RTC_DATA_ATTR static struct {
+    uint32_t magic;
+    time_t   last_settled_epoch;
+    uint16_t closed_baseline;
+    uint8_t  crc;
+} adherence_rtc = {0};
+
+static uint8_t rtc_checksum(void) {
+    uint8_t sum = 0;
+    const uint8_t* p = (const uint8_t*)&adherence_rtc.last_settled_epoch;
+    size_t n = (const uint8_t*)&adherence_rtc.crc - p;
+    while (n--) {
+        sum += *p++;
+    }
+    return sum;
+}
+
+static void rtc_save(void) {
+    time_t   settled  = adherence_rtc.last_settled_epoch;
+    uint16_t baseline = adherence_rtc.closed_baseline;
+    // Re-zero so padding bytes covered by the checksum are deterministic.
+    memset(&adherence_rtc, 0, sizeof(adherence_rtc));
+    adherence_rtc.last_settled_epoch = settled;
+    adherence_rtc.closed_baseline    = baseline;
+    adherence_rtc.magic = ADHERENCE_RTC_MAGIC;
+    adherence_rtc.crc   = rtc_checksum();
+}
 
 // --- helpers ---
 
@@ -102,8 +153,17 @@ static bool sensor_raw_open(void) {
     switch (CLIP_SENSOR_TYPE) {
     case CLIP_SENSOR_PHOTOTRANSISTOR:
         return analogRead(sensor_pin) > CLIP_SENSOR_LIGHT_THRESHOLD;
-    case CLIP_SENSOR_IR_REFLECTIVE:
-        return analogRead(sensor_pin) < CLIP_SENSOR_REFLECT_THRESHOLD;
+    case CLIP_SENSOR_IR_REFLECTIVE: {
+        int raw = analogRead(sensor_pin);
+        int threshold;
+        if (adherence_rtc.closed_baseline >= CLIP_SENSOR_REFLECT_MARGIN) {
+            // Open when the reading drops below the stored closed baseline.
+            threshold = (int)adherence_rtc.closed_baseline - CLIP_SENSOR_REFLECT_MARGIN;
+        } else {
+            threshold = CLIP_SENSOR_REFLECT_THRESHOLD;   // no baseline yet
+        }
+        return raw < threshold;
+    }
     case CLIP_SENSOR_SIMULATED:
     default:
         return CLIP_SENSOR_SIM_OPEN;
@@ -198,6 +258,69 @@ static time_t find_active_intake(const hub_time* now, time_t now_epoch) {
     return best;
 }
 
+// Report MISSED for any scheduled intake whose window fully elapsed while the
+// clip was asleep (or otherwise not watching). `last_settled_epoch` bounds how
+// far back we look, so each intake is reported at most once even across reboots.
+static void catch_up_missed(const hub_time* now, time_t now_epoch) {
+    time_t monday = monday_epoch_of(now);
+    if (monday == (time_t)-1) {
+        return;
+    }
+
+    time_t from   = adherence_rtc.last_settled_epoch;
+    time_t cutoff = now_epoch - INTAKE_WINDOW_SECONDS;
+    if (cutoff <= from) {
+        return;   // nothing new to settle
+    }
+
+    // Look back two weeks so a multi-day outage is still reconciled.
+    for (int week = -2; week <= 0; week++) {
+        time_t base = monday + (time_t)week * 7 * 86400;
+        for (int d = 0; d < DAYS_PER_WEEK; d++) {
+            const day_schedule* ds = &schedule.days[d];
+            for (int i = 0; i < ds->count && i < MAX_INTAKES_PER_DAY; i++) {
+                time_t e = base
+                         + (time_t)d * 86400
+                         + (time_t)ds->hours[i] * 3600
+                         + (time_t)ds->minutes[i] * 60;
+                if (e > from && e <= cutoff) {
+                    Serial.printf("[clip] intake missed while asleep (epoch %lld)\n",
+                                  (long long)e);
+                    clip_comms_send_missed();   // retained if it can't go out yet
+                }
+            }
+        }
+    }
+
+    adherence_rtc.last_settled_epoch = cutoff;
+    rtc_save();
+}
+
+// Mark a freshly detected intake as the one being handled, and record that it is
+// settled so catch_up_missed() won't re-report it later.
+static void arm_intake(time_t epoch, uint32_t ms) {
+    handled_intake_epoch = epoch;
+    intake_state = INTAKE_WAITING;
+    intake_armed_ms = ms;
+    adherence_rtc.last_settled_epoch = epoch;
+    rtc_save();
+}
+
+// Re-sample the IR "closed" baseline (the box should be closed during pairing).
+static void recalibrate_baseline(void) {
+    if (CLIP_SENSOR_TYPE != CLIP_SENSOR_IR_REFLECTIVE) {
+        return;
+    }
+    long sum = 0;
+    for (int i = 0; i < 16; i++) {
+        sum += analogRead(sensor_pin);
+        delay(5);
+    }
+    adherence_rtc.closed_baseline = (uint16_t)(sum / 16);
+    rtc_save();
+    Serial.printf("[clip] IR closed baseline = %u\n", adherence_rtc.closed_baseline);
+}
+
 // --- public API ---
 
 void clip_adherence_begin(uint8_t pin) {
@@ -216,20 +339,41 @@ void clip_adherence_begin(uint8_t pin) {
     box_state = BOX_CLOSED;
     intake_state = INTAKE_WAITING;
     handled_intake_epoch = (time_t)-1;
+    intake_armed_ms = 0;
+    open_since_ms = 0;
+
+    // Restore (or discard) the RTC-persisted settled epoch + IR baseline.
+    if (adherence_rtc.magic != ADHERENCE_RTC_MAGIC ||
+        adherence_rtc.crc != rtc_checksum()) {
+        memset(&adherence_rtc, 0, sizeof(adherence_rtc));
+    }
 }
 
 void clip_adherence_set_schedule(const week_schedule* sched) {
+    // Reset both state machines on every (re)application, so an interrupted
+    // intake or a stale handled epoch can't leak into the new schedule.
+    clip_alarm_stop();
+    box_state = BOX_CLOSED;
+    intake_state = INTAKE_WAITING;
+    handled_intake_epoch = (time_t)-1;
+    intake_armed_ms = 0;
+    open_since_ms = 0;
+
     if (sched == NULL) {
         have_schedule = false;
         memset(&schedule, 0, sizeof(schedule));
-        clip_alarm_stop();
-        box_state = BOX_CLOSED;
-        intake_state = INTAKE_WAITING;
-        handled_intake_epoch = (time_t)-1;
         return;
     }
     memcpy(&schedule, sched, sizeof(schedule));
     have_schedule = true;
+}
+
+void clip_adherence_on_assign(void) {
+    // New pairing: nothing before now is relevant for this medicine.
+    time_t now = time(NULL);
+    adherence_rtc.last_settled_epoch = (now > 0) ? now : 0;
+    rtc_save();
+    recalibrate_baseline();
 }
 
 void clip_adherence_loop(void) {
@@ -258,8 +402,13 @@ void clip_adherence_loop(void) {
     hub_time now;
     time_t now_epoch;
     if (!read_clock(&now, &now_epoch)) {
-        // RTC not set yet — no intake window, but still watch for unexpected opens.
-        now_epoch = (time_t)-1;
+        now_epoch = (time_t)-1;   // RTC not set yet — can't evaluate windows
+    }
+
+    // 1) Report any intake whose window the clip slept through, before arming
+    //    the next one.
+    if (now_epoch != (time_t)-1) {
+        catch_up_missed(&now, now_epoch);
     }
 
     time_t active_epoch = (now_epoch == (time_t)-1)
@@ -273,12 +422,20 @@ void clip_adherence_loop(void) {
     case BOX_CLOSED:
         clip_alarm_stop();
         if (active_epoch != (time_t)-1 && active_epoch != handled_intake_epoch) {
-            // A new intake window opened: prompt the user, arm the 30-min timer.
-            handled_intake_epoch = active_epoch;
-            intake_state = INTAKE_WAITING;
+            // A fresh intake window opened: prompt the user and arm the timer.
+            arm_intake(active_epoch, ms);
             clip_alarm_start();
             box_state = BOX_WAITING_FOR_OPENING;
             Serial.println("[clip] intake time — waiting for opening");
+        } else if (handled_intake_epoch != (time_t)-1 &&
+                   intake_state == INTAKE_WAITING &&
+                   active_epoch == handled_intake_epoch) {
+            // The box just closed after an intake was detected while it was open:
+            // prompt for it now that the opening can actually be detected.
+            intake_armed_ms = ms;
+            clip_alarm_start();
+            box_state = BOX_WAITING_FOR_OPENING;
+            Serial.println("[clip] box closed — prompting pending intake");
         } else if (sensor_open) {
             // Unexpected open (no active intake window) — start the grace timer.
             open_since_ms = ms;
@@ -298,12 +455,15 @@ void clip_adherence_loop(void) {
             Serial.println("[clip] pill taken");
         } else if (now_epoch != (time_t)-1 &&
                    now_epoch - handled_intake_epoch >= INTAKE_WINDOW_SECONDS) {
-            // 30 minutes elapsed with no opening: missed intake.
+            // Window expired with no opening: missed intake.
             clip_comms_send_missed();
             intake_state = INTAKE_MISSED;
             clip_alarm_stop();
             box_state = BOX_CLOSED;
             Serial.println("[clip] pill missed");
+        } else if (ms - intake_armed_ms >= (uint32_t)CLIP_ESCALATE_AFTER_SEC * 1000UL) {
+            // 5 minutes unheeded: escalate to the more urgent pattern (idempotent).
+            clip_alarm_escalate();
         }
         break;
 
@@ -311,10 +471,24 @@ void clip_adherence_loop(void) {
         if (!sensor_open) {
             box_state = BOX_CLOSED;
             Serial.println("[clip] box closed");
-        } else if (ms - open_since_ms >= BOX_OPEN_GRACE_MS) {
-            // Still open after the grace period: warn the hub and sound the alarm.
+            break;
+        }
+        // A new intake may open (or a pending one expire) while the box is open.
+        if (active_epoch != (time_t)-1 && active_epoch != handled_intake_epoch) {
+            arm_intake(active_epoch, ms);   // prompt only once the box is closed
+            Serial.println("[clip] intake pending (box open)");
+        } else if (handled_intake_epoch != (time_t)-1 &&
+                   intake_state == INTAKE_WAITING &&
+                   now_epoch != (time_t)-1 &&
+                   now_epoch - handled_intake_epoch >= INTAKE_WINDOW_SECONDS) {
+            clip_comms_send_missed();
+            intake_state = INTAKE_MISSED;
+            Serial.println("[clip] intake missed (box left open)");
+        }
+        if (ms - open_since_ms >= BOX_OPEN_GRACE_MS) {
+            // Still open after the grace period: warn the hub and remind the user.
             clip_comms_send_box_open();
-            clip_alarm_start();
+            clip_alarm_remind();
             box_state = BOX_WAITING_FOR_CLOSING;
             Serial.println("[clip] box left open");
         }
@@ -325,8 +499,21 @@ void clip_adherence_loop(void) {
             clip_alarm_stop();
             box_state = BOX_CLOSED;
             Serial.println("[clip] box closed");
+            break;
         }
-        // else keep sounding until the box is closed.
+        clip_alarm_remind();   // idempotent
+        // Same pending-intake / expiry handling as BOX_OPEN.
+        if (active_epoch != (time_t)-1 && active_epoch != handled_intake_epoch) {
+            arm_intake(active_epoch, ms);
+            Serial.println("[clip] intake pending (box open)");
+        } else if (handled_intake_epoch != (time_t)-1 &&
+                   intake_state == INTAKE_WAITING &&
+                   now_epoch != (time_t)-1 &&
+                   now_epoch - handled_intake_epoch >= INTAKE_WINDOW_SECONDS) {
+            clip_comms_send_missed();
+            intake_state = INTAKE_MISSED;
+            Serial.println("[clip] intake missed (box left open)");
+        }
         break;
     }
 }

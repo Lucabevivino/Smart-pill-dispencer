@@ -23,6 +23,14 @@
 // backend ignores this pin entirely.
 #define CLIP_ADHERENCE_SENSOR_PIN 0
 
+// Battery voltage sense. A single-cell LiPo (3.0-4.2 V) exceeds the ESP32-C3's
+// ~3.3 V ADC input, so a resistor divider scales it down first; CLIP_BATTERY_DIVIDER
+// is the (battery / ADC) ratio used to scale the reading back up (2.0f = 1:1
+// divider). CLIP_BATTERY_PIN must be an ADC-capable GPIO (GPIO0..GPIO4; avoid
+// strapping pin GPIO2). Set it to 0xFF to disable battery sensing.
+#define CLIP_BATTERY_PIN      3     // ADC1_CH3
+#define CLIP_BATTERY_DIVIDER  2.0f
+
 // ---------------------------------------------------------------------------
 // Deep sleep. When enabled the clip sleeps between events and wakes for the next
 // scheduled intake or the next re-sync (CLIP_RESYNC_INTERVAL_SEC, defined in
@@ -51,6 +59,7 @@ void setup() {
     esp_sleep_wakeup_cause_t wake = esp_sleep_get_wakeup_cause();
 
     clip_comms_begin();                                  // ESP-NOW + restore persisted hub
+    clip_comms_set_battery(CLIP_BATTERY_PIN, CLIP_BATTERY_DIVIDER);
     clip_alarm_begin(CLIP_ALARM_LED_PIN, CLIP_ALARM_BUZZER_PIN);
 
     // Hardware self-test only on a cold boot — don't blink/beep the box on every
@@ -86,7 +95,9 @@ static void clip_maybe_resync(void) {
         return;
     }
     last_attempt_ms = millis();
-    clip_comms_request_time_sync(5000);
+    if (clip_comms_request_time_sync(5000)) {
+        clip_comms_send_battery();   // report battery piggybacked on a fresh sync
+    }
 }
 
 // If we have no hub (never found one, or forgot a stale one), keep scanning until
@@ -151,14 +162,19 @@ void loop() {
     clip_comms_loop();                                   // drains MSG_ASSIGN -> RTC + schedule
     clip_maybe_rediscover();                             // keep scanning if no hub yet
 
-    // Once assigned, hand the schedule to the adherence machine (once). If the hub
-    // removes us later, clear the schedule and silence the clip.
-    if (!schedule_loaded && clip_comms_is_assigned()) {
-        clip_adherence_set_schedule(clip_comms_schedule());
+    // Re-apply the schedule when it changes (new ASSIGN / REMOVE), and once per
+    // boot (a deep-sleep wake restores it from RTC without a new ASSIGN).
+    if (clip_comms_take_schedule_changed()) {
+        if (clip_comms_is_assigned()) {
+            clip_adherence_set_schedule(clip_comms_schedule());
+            clip_adherence_on_assign();   // new pairing: reset settled epoch + IR baseline
+        } else {
+            clip_adherence_set_schedule(NULL);
+        }
         schedule_loaded = true;
-    } else if (schedule_loaded && !clip_comms_is_assigned()) {
-        clip_adherence_set_schedule(NULL);
-        schedule_loaded = false;
+    } else if (!schedule_loaded) {
+        clip_adherence_set_schedule(clip_comms_schedule());   // NULL if not assigned
+        schedule_loaded = true;
     }
 
     // Hub asked this clip to blink (identify the pill box).

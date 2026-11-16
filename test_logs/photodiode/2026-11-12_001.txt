@@ -1,0 +1,1 @@
+# photodiode bench log | 2026-11-12T15:32:02 | port=/dev/cu.debug-console baud=115200 threshold=200000

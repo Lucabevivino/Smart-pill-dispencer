@@ -35,24 +35,118 @@ static comms_ring_t hello_ring;
 static comms_ring_t time_ring;
 static comms_ring_t ack_ring;
 
-// Adherence events (MSG_TAKEN / MSG_MISSED / MSG_BOX_OPEN) from clips. A small
-// ring buffer (single producer: the ESP-NOW callback; single consumer: the main
-// loop) with the sender's seq, so retransmissions can be de-duplicated and ACKed.
+// Adherence events (MSG_TAKEN / MSG_MISSED / MSG_BOX_OPEN) and battery reports
+// (MSG_BATTERY) from clips. A small ring buffer (single producer: the ESP-NOW
+// callback; single consumer: the main loop) with the sender's seq, so
+// retransmissions can be de-duplicated and ACKed.
 #define HUB_EVENT_QUEUE_SIZE 8
-static volatile uint8_t event_types[HUB_EVENT_QUEUE_SIZE];
-static volatile uint8_t event_node_ids[HUB_EVENT_QUEUE_SIZE];
-static volatile uint8_t event_seqs[HUB_EVENT_QUEUE_SIZE];
-static volatile uint8_t event_head = 0;   // next write slot (callback)
-static volatile uint8_t event_tail = 0;   // next read slot (main loop)
+static volatile uint8_t  event_types[HUB_EVENT_QUEUE_SIZE];
+static volatile uint8_t  event_node_ids[HUB_EVENT_QUEUE_SIZE];
+static volatile uint8_t  event_seqs[HUB_EVENT_QUEUE_SIZE];
+static volatile uint16_t event_mvs[HUB_EVENT_QUEUE_SIZE];   // MSG_BATTERY only
+static volatile uint8_t  event_head = 0;   // next write slot (callback)
+static volatile uint8_t  event_tail = 0;   // next read slot (main loop)
 
-// Last adherence seq accepted per node (1-based id). A repeated seq is a
-// retransmission: we re-ACK it but do not apply it again.
-static uint8_t last_adherence_seq[MAX_NODES + 1];
+// Most recent battery voltage reported per node (millivolts), 0 if none yet.
+static uint16_t last_battery_mv[MAX_NODES + 1];
+
+// --- persistent adherence log ------------------------------------------------
+// Every fresh adherence event (MSG_TAKEN / MSG_MISSED / MSG_BOX_OPEN) is appended
+// to a bounded ring log that survives reboot. This does two jobs at once: (1) it
+// is tomorrow's server client's source of truth for what to forward to the DB,
+// and (2) it persists the per-node de-dup watermark (last_seq), so a hub reboot
+// can't re-apply a retained event and double-count it.
+#define HUB_ADHERENCE_LOG_MAX 128
+typedef struct {
+    uint8_t  node_id;
+    uint8_t  type;
+    uint8_t  seq;
+    uint32_t timestamp;   // epoch seconds when the event was applied
+} adherence_log_entry_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t count;                    // entries currently stored (0..MAX)
+    uint16_t start;                    // ring index of the oldest entry
+    uint8_t  last_seq[MAX_NODES + 1];  // de-dup watermark, 0xFF = "none yet"
+    adherence_log_entry_t entries[HUB_ADHERENCE_LOG_MAX];
+} hub_adherence_persist_t;
+
+#define HUB_ADHERENCE_LOG_MAGIC 0x41444C47u   // "ADLG"
+#define HUB_LOG_NVS_NAMESPACE   "adhlog"
+#define HUB_LOG_NVS_KEY         "log"
+
+// The live log + de-dup state. `adhlog.last_seq` is the authoritative de-dup
+// watermark (replaces the old RAM-only last_adherence_seq[]).
+static hub_adherence_persist_t adhlog;
+
+static void adherence_log_save(void) {
+    nvs_handle_t h;
+    if (nvs_open(HUB_LOG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    adhlog.magic = HUB_ADHERENCE_LOG_MAGIC;
+    nvs_set_blob(h, HUB_LOG_NVS_KEY, &adhlog, sizeof(adhlog));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void adherence_log_restore(void) {
+    memset(&adhlog, 0, sizeof(adhlog));
+    for (int i = 0; i <= MAX_NODES; i++) {
+        adhlog.last_seq[i] = 0xFF;   // sentinel: "no event seen yet"
+    }
+
+    nvs_handle_t h;
+    if (nvs_open(HUB_LOG_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return;   // nothing persisted yet — keep the empty log
+    }
+    size_t len = sizeof(adhlog);
+    if (nvs_get_blob(h, HUB_LOG_NVS_KEY, &adhlog, &len) == ESP_OK &&
+        len == sizeof(adhlog) && adhlog.magic == HUB_ADHERENCE_LOG_MAGIC) {
+        // Clamp in case HUB_ADHERENCE_LOG_MAX shrank across a firmware change.
+        if (adhlog.count > HUB_ADHERENCE_LOG_MAX) {
+            adhlog.count = HUB_ADHERENCE_LOG_MAX;
+        }
+        if (adhlog.start >= HUB_ADHERENCE_LOG_MAX) {
+            adhlog.start = 0;
+        }
+    } else {
+        // Corrupt or missing: reset to the empty-log defaults.
+        memset(&adhlog, 0, sizeof(adhlog));
+        for (int i = 0; i <= MAX_NODES; i++) {
+            adhlog.last_seq[i] = 0xFF;
+        }
+    }
+    nvs_close(h);
+}
+
+static void adherence_log_append(uint8_t node_id, uint8_t type, uint8_t seq,
+                                 uint32_t timestamp) {
+    adherence_log_entry_t e;
+    e.node_id = node_id;
+    e.type = type;
+    e.seq = seq;
+    e.timestamp = timestamp;
+
+    if (adhlog.count < HUB_ADHERENCE_LOG_MAX) {
+        adhlog.entries[(adhlog.start + adhlog.count) % HUB_ADHERENCE_LOG_MAX] = e;
+        adhlog.count++;
+    } else {
+        adhlog.entries[adhlog.start] = e;   // full: overwrite the oldest entry
+        adhlog.start = (uint16_t)((adhlog.start + 1) % HUB_ADHERENCE_LOG_MAX);
+    }
+    adherence_log_save();
+}
 
 // Reliable outbound queue (assign / blink / remove / time response). Persisted
 // to NVS so an un-ACKed message survives a hub reboot (the clip de-dups by seq,
 // so a re-sent message after reboot is harmless).
 static reliable_tx_t tx;
+
+// Optional schedule source (registered by main.cpp) used to re-ASSIGN a rebooted
+// clip that re-HELLOs. Returns the week_schedule for an assigned node, or NULL.
+static const week_schedule* (*schedule_source)(int node_id) = NULL;
 
 #define HUB_TX_NVS_NAMESPACE "txq"
 #define HUB_TX_NVS_KEY       "queue"
@@ -87,10 +181,12 @@ static void hub_tx_restore(reliable_tx_t* t) {
     }
     hub_tx_persist_t p;
     size_t len = sizeof(p);
-    if (nvs_get_blob(h, HUB_TX_NVS_KEY, &p, &len) == ESP_OK && len == sizeof(p)) {
-        t->next_seq = p.next_seq;
+    if (nvs_get_blob(h, HUB_TX_NVS_KEY, &p, &len) == ESP_OK && len == sizeof(p) &&
+        p.magic == RELIABLE_TX_MAGIC) {
+        t->next_seq = (p.next_seq == 0) ? 1 : p.next_seq;   // 0 is the reserved sentinel
         memcpy(t->frames, p.frames, sizeof(t->frames));
         t->magic = RELIABLE_TX_MAGIC;   // reliable_init will keep the frames
+        reliable_seal(t);               // recompute the checksum over the restored queue
     }
     nvs_close(h);
 }
@@ -161,14 +257,15 @@ static void hub_ack_event(uint8_t node_id, uint8_t msg_type, uint8_t seq) {
 }
 
 // Called from the ESP-NOW receive callback only.
-static void queue_event(uint8_t type, uint8_t node_id, uint8_t seq) {
+static void queue_event(uint8_t type, uint8_t node_id, uint8_t seq, uint16_t mv) {
     uint8_t next = (uint8_t)((event_head + 1) % HUB_EVENT_QUEUE_SIZE);
     if (next == event_tail) {
         return;   // queue full — drop the newest event rather than clobber one
     }
-    event_types[event_head] = type;
+    event_types[event_head]    = type;
     event_node_ids[event_head] = node_id;
-    event_seqs[event_head] = seq;
+    event_seqs[event_head]     = seq;
+    event_mvs[event_head]      = mv;
     event_head = next;
 }
 
@@ -180,7 +277,10 @@ static void on_data_recv(const uint8_t* mac, const uint8_t* data, int len) {
     }
     switch (data[0]) {
     case MSG_HELLO:
-        comms_ring_push(&hello_ring, mac, data, (uint8_t)len);
+        if (len >= (int)sizeof(hello_msg) &&
+            ((const hello_msg*)data)->version == PROTOCOL_VERSION) {
+            comms_ring_push(&hello_ring, mac, data, (uint8_t)len);
+        }
         break;
     case MSG_TIME_REQUEST:
         comms_ring_push(&time_ring, mac, data, (uint8_t)len);
@@ -191,19 +291,25 @@ static void on_data_recv(const uint8_t* mac, const uint8_t* data, int len) {
     case MSG_TAKEN:
         if (len >= (int)sizeof(taken_msg)) {
             queue_event(MSG_TAKEN, ((const taken_msg*)data)->node_id,
-                        ((const taken_msg*)data)->seq);
+                        ((const taken_msg*)data)->seq, 0);
         }
         break;
     case MSG_MISSED:
         if (len >= (int)sizeof(missed_msg)) {
             queue_event(MSG_MISSED, ((const missed_msg*)data)->node_id,
-                        ((const missed_msg*)data)->seq);
+                        ((const missed_msg*)data)->seq, 0);
         }
         break;
     case MSG_BOX_OPEN:
         if (len >= (int)sizeof(box_open_msg)) {
             queue_event(MSG_BOX_OPEN, ((const box_open_msg*)data)->node_id,
-                        ((const box_open_msg*)data)->seq);
+                        ((const box_open_msg*)data)->seq, 0);
+        }
+        break;
+    case MSG_BATTERY:
+        if (len >= (int)sizeof(battery_msg)) {
+            queue_event(MSG_BATTERY, ((const battery_msg*)data)->node_id,
+                        ((const battery_msg*)data)->seq, ((const battery_msg*)data)->mv);
         }
         break;
     default:
@@ -264,6 +370,11 @@ bool hub_comms_begin(const char* ssid, const char* password,
     reliable_init(&tx, reliable_send_fn);
     tx.persist_fn = hub_tx_save;         // persist the queue on every change
 
+    // Restore the adherence log + de-dup watermark from NVS. 0xFF = "no event
+    // seen yet" (seq 0 is reserved, so no real event can alias it).
+    adherence_log_restore();
+    memset(last_battery_mv, 0, sizeof(last_battery_mv));
+
     esp_now_peer_info_t bcast;
     memset(&bcast, 0, sizeof(bcast));
     memcpy(bcast.peer_addr, ESPNOW_BROADCAST_MAC, 6);
@@ -312,6 +423,26 @@ void hub_comms_loop(void) {
                 print_mac(mac);
                 Serial.println();
             }
+
+            // Re-ASSIGN a clip that already belongs to a pill but lost its
+            // schedule across a cold reboot. The HELLO ACK only restores its
+            // node_id; without this the clip would sit assigned but never alarm.
+            if (node_is_assigned(id) && schedule_source != NULL) {
+                const week_schedule* sched = schedule_source(id);
+                if (sched != NULL) {
+                    assign_msg m;
+                    m.type = MSG_ASSIGN;
+                    m.seq = 0;   // stamped by reliable_send
+                    m.node_id = (uint8_t)id;
+                    m.schedule = *sched;
+                    if (!fetch_time(&m.time)) {
+                        memset(&m.time, 0, sizeof(m.time));
+                    }
+                    if (reliable_send(&tx, mac, &m, sizeof(m))) {
+                        Serial.printf("[hub] re-assigned schedule to node #%d\n", id);
+                    }
+                }
+            }
         }
     }
 
@@ -339,6 +470,38 @@ void hub_comms_loop(void) {
         last_wifi_retry_ms = now;
         Serial.println("[hub] WiFi lost, reconnecting");
         WiFi.reconnect();
+    }
+
+    // If the AP moved us to a different channel, re-anchor the ESP-NOW peers
+    // (they are pinned to the channel they were added on, so a stale peer would
+    // silently stop delivering once the AP hops channels).
+    if (WiFi.status() == WL_CONNECTED) {
+        uint8_t cur = WiFi.channel();
+        if (cur != channel) {
+            Serial.printf("[hub] WiFi channel changed %d -> %d, re-anchoring peers\n",
+                          (int)channel, (int)cur);
+            channel = cur;
+
+            esp_now_del_peer(ESPNOW_BROADCAST_MAC);
+            esp_now_peer_info_t bcast;
+            memset(&bcast, 0, sizeof(bcast));
+            memcpy(bcast.peer_addr, ESPNOW_BROADCAST_MAC, 6);
+            bcast.channel = channel;
+            bcast.ifidx = WIFI_IF_STA;
+            bcast.encrypt = false;
+            if (esp_now_add_peer(&bcast) != ESP_OK) {
+                Serial.println("[hub] re-add broadcast peer failed");
+            }
+
+            // Drop every registered node peer; the ensure_peer() loop below
+            // re-adds them on the new channel.
+            for (int id = 1; id <= MAX_NODES; id++) {
+                uint8_t m[6];
+                if (node_get_mac(id, m)) {
+                    esp_now_del_peer(m);
+                }
+            }
+        }
     }
 
     // Beacon: poll for new nodes.
@@ -421,19 +584,20 @@ bool hub_comms_remove(int node_id) {
     return reliable_send(&tx, mac, &m, sizeof(m));
 }
 
-bool hub_comms_now(hub_time* out) {
-    return fetch_time(out);
+void hub_comms_set_schedule_source(const week_schedule* (*cb)(int node_id)) {
+    schedule_source = cb;
 }
 
-bool hub_comms_take_event(uint8_t* type, uint8_t* node_id) {
+bool hub_comms_take_event(uint8_t* type, uint8_t* node_id, uint16_t* mv) {
     while (event_tail != event_head) {
-        uint8_t t = event_types[event_tail];
-        uint8_t n = event_node_ids[event_tail];
-        uint8_t s = event_seqs[event_tail];
+        uint8_t  t = event_types[event_tail];
+        uint8_t  n = event_node_ids[event_tail];
+        uint8_t  s = event_seqs[event_tail];
+        uint16_t m = event_mvs[event_tail];
         event_tail = (uint8_t)((event_tail + 1) % HUB_EVENT_QUEUE_SIZE);
 
         // De-duplicate: a repeated seq is a retransmission we already applied.
-        bool dup = (n >= 1 && n <= MAX_NODES && s == last_adherence_seq[n]);
+        bool dup = (n >= 1 && n <= MAX_NODES && s == adhlog.last_seq[n]);
 
         // ACK whether fresh or duplicate so the clip stops retrying.
         hub_ack_event(n, t, s);
@@ -442,15 +606,59 @@ bool hub_comms_take_event(uint8_t* type, uint8_t* node_id) {
             continue;   // already applied — skip to the next queued event
         }
         if (n >= 1 && n <= MAX_NODES) {
-            last_adherence_seq[n] = s;
+            adhlog.last_seq[n] = s;
+            if (t == MSG_BATTERY) {
+                last_battery_mv[n] = m;
+                adherence_log_save();   // persist the de-dup watermark
+            } else if (t == MSG_TAKEN || t == MSG_MISSED || t == MSG_BOX_OPEN) {
+                // Persist a fresh adherence event (also saves the watermark).
+                adherence_log_append(n, t, s, (uint32_t)time(NULL));
+            }
         }
+
         if (type != NULL) {
             *type = t;
         }
         if (node_id != NULL) {
             *node_id = n;
         }
+        if (mv != NULL) {
+            *mv = m;
+        }
         return true;
     }
     return false;
+}
+
+uint16_t hub_comms_battery_mv(int node_id) {
+    if (node_id < 1 || node_id > MAX_NODES) {
+        return 0;
+    }
+    return last_battery_mv[node_id];
+}
+
+uint16_t hub_comms_adherence_count(void) {
+    return adhlog.count;
+}
+
+bool hub_comms_adherence_get(uint16_t index, uint8_t* node_id, uint8_t* type,
+                             uint8_t* seq, uint32_t* timestamp) {
+    if (index >= adhlog.count) {
+        return false;
+    }
+    const adherence_log_entry_t* e =
+        &adhlog.entries[(adhlog.start + index) % HUB_ADHERENCE_LOG_MAX];
+    if (node_id != NULL)   *node_id   = e->node_id;
+    if (type != NULL)      *type      = e->type;
+    if (seq != NULL)       *seq       = e->seq;
+    if (timestamp != NULL) *timestamp = e->timestamp;
+    return true;
+}
+
+void hub_comms_adherence_clear(void) {
+    // Drop all logged events but keep the de-dup watermark, so clearing the
+    // server-facing log does not re-open the double-count window.
+    adhlog.count = 0;
+    adhlog.start = 0;
+    adherence_log_save();
 }

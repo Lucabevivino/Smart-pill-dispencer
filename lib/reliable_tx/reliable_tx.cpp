@@ -13,8 +13,32 @@ static uint32_t backoff_ms(const reliable_tx_t* t, uint8_t attempts) {
     return (d > t->max_retry_ms) ? t->max_retry_ms : d;
 }
 
+// CRC-8 (polynomial 0x07) over the persisted portion of the queue (frames +
+// next_seq), so a clip can detect RTC-memory bit-rot on deep-sleep wake instead
+// of silently trusting `magic` alone. The volatile fields (send/persist fn
+// pointers, retry timers) are deliberately excluded: they are re-established by
+// reliable_init every boot.
+static uint8_t crc8_update(uint8_t crc, const uint8_t* p, size_t n) {
+    while (n--) {
+        crc ^= *p++;
+        for (uint8_t i = 0; i < 8; i++) {
+            crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x07) : (uint8_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+static uint8_t queue_crc(const reliable_tx_t* t) {
+    uint8_t crc = crc8_update(0, (const uint8_t*)t->frames, sizeof(t->frames));
+    return crc8_update(crc, &t->next_seq, 1);
+}
+
+void reliable_seal(reliable_tx_t* t) {
+    t->crc = queue_crc(t);
+}
+
 static void reset_volatile(reliable_tx_t* t) {
-    // Do not touch frames/next_seq/magic: on a deep-sleep wake they are the
+    // Do not touch frames/next_seq/magic/crc: on a deep-sleep wake they are the
     // pending queue and must survive. Only reset per-boot state.
     t->base_retry_ms = 1000;
     t->max_retry_ms = 30000;
@@ -25,25 +49,27 @@ void reliable_init(reliable_tx_t* t,
     t->send_fn = send_fn;
     reset_volatile(t);
 
-    if (t->magic != RELIABLE_TX_MAGIC) {
-        // Cold boot (RTC memory zeroed, or a hub in plain RAM): start empty.
+    bool valid = (t->magic == RELIABLE_TX_MAGIC) && (t->crc == queue_crc(t));
+    if (!valid) {
+        // Cold boot (RTC memory zeroed), a hub in plain RAM, or a corrupted
+        // deep-sleep queue: start empty.
         memset(t->frames, 0, sizeof(t->frames));
         // Random starting seq so a sender reboot is very unlikely to re-issue a
         // seq a peer still holds in its de-dup map (which would false-dedup the
         // first message after the reboot). 1..255, never 0.
         t->next_seq = (uint8_t)(1 + (esp_random() & 0xFE));
         t->magic = RELIABLE_TX_MAGIC;
-        return;
-    }
-
-    // Deep-sleep wake with a valid queue: keep pending frames, but re-arm their
-    // retry timers so they go out again as soon as the loop runs.
-    for (int i = 0; i < RELIABLE_QUEUE_SIZE; i++) {
-        if (t->frames[i].used) {
-            t->frames[i].next_retry_ms = 0;
-            t->frames[i].attempts = 0;
+    } else {
+        // Deep-sleep wake with a valid queue: keep pending frames, but re-arm
+        // their retry timers so they go out again as soon as the loop runs.
+        for (int i = 0; i < RELIABLE_QUEUE_SIZE; i++) {
+            if (t->frames[i].used) {
+                t->frames[i].next_retry_ms = 0;
+                t->frames[i].attempts = 0;
+            }
         }
     }
+    reliable_seal(t);   // re-arming / cold-boot changed frames or next_seq
 }
 
 bool reliable_send(reliable_tx_t* t, const uint8_t* dst, const void* data, uint8_t len) {
@@ -64,7 +90,10 @@ bool reliable_send(reliable_tx_t* t, const uint8_t* dst, const void* data, uint8
     memcpy(f->dst, dst, 6);
     memcpy(f->data, data, len);
     f->len = len;
-    f->seq = t->next_seq++;
+    f->seq = t->next_seq;
+    // Advance in 1..255, wrapping back to 1 (never 0): 0 is reserved as the
+    // receiver's "no message seen yet" sentinel, so a real frame can't alias it.
+    t->next_seq = (t->next_seq == 0xFF) ? 1 : (uint8_t)(t->next_seq + 1);
     if (len >= 2) {
         f->data[1] = f->seq;   // seq is the 2nd byte of every reliable message
     }
@@ -77,6 +106,7 @@ bool reliable_send(reliable_tx_t* t, const uint8_t* dst, const void* data, uint8
         f->attempts = 1;
         f->next_retry_ms = millis() + backoff_ms(t, f->attempts);
     }
+    reliable_seal(t);   // frames + next_seq changed
     if (t->persist_fn != NULL) {
         t->persist_fn(t);   // the queue changed — let the owner persist it
     }
@@ -90,8 +120,8 @@ void reliable_loop(reliable_tx_t* t) {
     uint32_t now = millis();
     for (int i = 0; i < RELIABLE_QUEUE_SIZE; i++) {
         reliable_frame_t* f = &t->frames[i];
-        if (!f->used || f->next_retry_ms > now) {
-            continue;
+        if (!f->used || (int32_t)(f->next_retry_ms - now) > 0) {
+            continue;   // not yet due (subtraction idiom is millis()-wraparound-safe)
         }
         t->send_fn(f->dst, f->data, f->len);
         f->attempts++;
@@ -103,11 +133,16 @@ void reliable_on_sent(reliable_tx_t* t, const uint8_t* mac, bool ok) {
     if (ok) {
         return;   // link-layer success — the app ACK (timeout) is the real proof
     }
+    bool changed = false;
     for (int i = 0; i < RELIABLE_QUEUE_SIZE; i++) {
         reliable_frame_t* f = &t->frames[i];
         if (f->used && memcmp(f->dst, mac, 6) == 0) {
             f->next_retry_ms = 0;   // retry immediately
+            changed = true;
         }
+    }
+    if (changed) {
+        reliable_seal(t);   // next_retry_ms is part of the checksummed state
     }
 }
 
@@ -116,6 +151,7 @@ void reliable_on_ack(reliable_tx_t* t, uint8_t seq) {
         reliable_frame_t* f = &t->frames[i];
         if (f->used && f->seq == seq) {
             f->used = false;   // delivered — free the slot
+            reliable_seal(t);   // frames changed
             if (t->persist_fn != NULL) {
                 t->persist_fn(t);   // the queue changed — let the owner persist it
             }

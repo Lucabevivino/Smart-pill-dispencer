@@ -2,7 +2,6 @@
 #define VIEW_MANAGEMENT_H
 
 #define MAX_ROWS 20
-#define MAX_COLS 10
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,13 +12,6 @@ typedef struct Menu {
     void (*function) (void*,void*,void*,void*);
     struct Menu* next;
 } Menu;
-
-
-struct Menu_table{
-    char data[MAX_ROWS][MAX_COLS];
-    int rows;
-    int cols;
-};
 
 Menu* create_view(const char* title, void (*function)(void*,void*,void*,void*), Menu* next);
 

@@ -50,6 +50,11 @@ bool clip_comms_is_assigned(void);
 // The schedule from the last MSG_ASSIGN, or NULL if not assigned yet.
 const week_schedule* clip_comms_schedule(void);
 
+// True once (one-shot) when a new MSG_ASSIGN or MSG_REMOVE was processed since
+// the last call. Used by the clip to re-apply / clear the schedule in the
+// adherence engine whenever it changes.
+bool clip_comms_take_schedule_changed(void);
+
 // Drain a pending "blink" request from the hub (identify this clip). Returns
 // true and fills `seconds` if one arrived since the last call.
 bool clip_comms_take_blink(uint8_t* seconds);
@@ -68,7 +73,7 @@ bool clip_comms_send_box_open(void);
 // that accumulates over deep sleep. The request is best-effort; the hub answers
 // with a reliable MSG_TIME_RESPONSE (see protocol.h).
 
-#define CLIP_RESYNC_INTERVAL_SEC (30u) //2u * 3600u
+#define CLIP_RESYNC_INTERVAL_SEC (3600u) // design doc: hourly re-sync (dev: 30 s)
 
 // Send MSG_TIME_REQUEST and wait up to `timeout_ms` for the hub's response. On
 // success the RTC is re-set and the last-sync epoch updated. Returns true if a
@@ -81,6 +86,18 @@ time_t clip_comms_last_resync_epoch(void);
 
 // True when the RTC has never been synced or the re-sync interval has elapsed.
 bool clip_comms_resync_due(time_t now_epoch);
+
+// --- battery reporting --------------------------------------------------------
+// Configure battery-voltage sensing: `pin` is the ADC-capable GPIO the divider
+// feeds, `divider` the (battery / ADC) ratio of the resistor divider (e.g. 2.0f
+// for a 1:1 divider). Pass pin == 0xFF to disable sensing (reports 0 mV). Call
+// once at startup before the first clip_comms_send_battery().
+void clip_comms_set_battery(uint8_t pin, float divider);
+
+// Send MSG_BATTERY (reliable, so it is retried until the hub ACKs) with the
+// current battery voltage in millivolts. Returns true if queued. The clip sends
+// this piggybacked on assignment and on each successful time re-sync.
+bool clip_comms_send_battery(void);
 
 #ifdef __cplusplus
 }

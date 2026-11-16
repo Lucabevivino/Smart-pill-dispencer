@@ -26,8 +26,14 @@ extern "C" {
 void clip_adherence_begin(uint8_t sensor_pin);
 
 // Set the weekly schedule to track (deep-copied). NULL clears the schedule and
-// resets both state machines (e.g. the hub removed this clip).
+// resets both state machines (e.g. the hub removed this clip). Does NOT touch
+// the RTC-persisted settled-epoch marker or the IR closed-baseline.
 void clip_adherence_set_schedule(const week_schedule* sched);
+
+// Call when the hub sends a fresh MSG_ASSIGN (a new pairing): marks all past
+// intakes as settled (so nothing before the assignment is reported MISSED) and
+// re-samples the IR "closed" baseline for this box.
+void clip_adherence_on_assign(void);
 
 // Housekeeping — call from loop().
 void clip_adherence_loop(void);

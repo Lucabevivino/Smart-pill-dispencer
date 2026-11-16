@@ -55,6 +55,11 @@
 
 #define MAX_NAME_LEN 5
 
+// A clip reporting a battery voltage (in millivolts) below this is shown as a
+// low-battery warning on the LCD. A single-cell LiPo is ~4200 mV fully charged
+// and ~3300 mV when nearly empty; tune to your cells/divider.
+#define BATTERY_LOW_MV 3300
+
 // day_schedule / week_schedule come from protocol.h (shared with the Clip).
 
 struct pill_data {
@@ -72,8 +77,6 @@ const char* const DAY_NAMES[DAYS_PER_WEEK] =
 
 pill_data* pill_list = NULL;
 pill_data  pending_pill;   // pill assembled during "Add a pill", before node association
-char view_1[15] = "";
-char view_2[15] = "";
 int pill_registered = 0;
 
 // --- Pill list persistence (NVS via Preferences) ---
@@ -89,6 +92,8 @@ void pill_list_save(void) {
     prefs.putInt("cnt", pill_registered);
     if (pill_registered > 0) {
         prefs.putBytes("list", pill_list, pill_registered * sizeof(pill_data));
+    } else {
+        prefs.remove("list");   // drop a stale blob when the list empties
     }
     prefs.end();
 }
@@ -99,16 +104,32 @@ void pill_list_load(void) {
         return;
     }
     int n = prefs.getInt("cnt", 0);
-    if (n > 0) {
-        pill_list = (pill_data*)realloc(pill_list, n * sizeof(pill_data));
-        size_t got = prefs.getBytes("list", pill_list, n * sizeof(pill_data));
-        if (got == (size_t)n * sizeof(pill_data)) {
-            pill_registered = n;
-        } else {
-            free(pill_list);
-            pill_list = NULL;
-            pill_registered = 0;   // size mismatch — don't trust a partial load
-        }
+    // Sanity: at most one pill per clip slot, so an out-of-range count is corrupt.
+    if (n < 0 || n > MAX_NODES) {
+        n = 0;
+    }
+    if (n == 0) {
+        free(pill_list);
+        pill_list = NULL;
+        pill_registered = 0;
+        prefs.end();
+        return;
+    }
+
+    pill_data* grown = (pill_data*)realloc(pill_list, (size_t)n * sizeof(pill_data));
+    if (grown == NULL) {
+        prefs.end();
+        return;   // out of memory — keep the existing (probably NULL) list
+    }
+    pill_list = grown;
+
+    size_t got = prefs.getBytes("list", pill_list, (size_t)n * sizeof(pill_data));
+    if (got == (size_t)n * sizeof(pill_data)) {
+        pill_registered = n;
+    } else {
+        free(pill_list);
+        pill_list = NULL;
+        pill_registered = 0;   // size mismatch — don't trust a partial load
     }
     prefs.end();
 }
@@ -205,6 +226,8 @@ void function1(void* arg1, void* arg2, void* arg3, void* arg4) {
 }
 
 void function2(void* arg1, void* arg2, void* arg3, void* arg4) {
+    memset(&pending_pill, 0, sizeof(pending_pill));   // clear a prior aborted add
+
     // 1) Find a free clip (node) to associate with the new pill.
     int node_id = node_reserve_free();
     if (node_id == 0) {
@@ -217,7 +240,7 @@ void function2(void* arg1, void* arg2, void* arg3, void* arg4) {
     }
 
     // 2) Make the clip blink so the user knows which box to attach, then wait
-    //    for them to clip the box on.
+    //    for them to clip the box on (SELECT). UP cancels and frees the slot.
     hub_comms_blink(node_id, 10);
     lcd.clear();
     lcd.setCursor(0, 0);
@@ -225,7 +248,16 @@ void function2(void* arg1, void* arg2, void* arg3, void* arg4) {
     lcd.setCursor(0, 1);
     lcd.print("clip #");
     lcd.print(node_id);
-    while (read_buttons() != 'S') {}   // SELECT = box clipped, continue
+    while (true) {
+        char btn = read_buttons();
+        if (btn == 'S') {
+            break;   // box clipped, continue
+        }
+        if (btn == 'U') {
+            node_release(node_id);   // cancel — don't leave the clip stuck assigned
+            return;
+        }
+    }
 
     // 3) Pill identity and contents.
     enter_name(pending_pill.name);
@@ -320,7 +352,9 @@ void function5(void* arg1, void* arg2, void* arg3, void* arg4) {
     while (true) {
         int day, hour, minute;
         const char* name;
-        intake_at(idx, &day, &hour, &minute, &name);
+        if (!intake_at(idx, &day, &hour, &minute, &name)) {
+            break;   // schedule is empty (shouldn't happen after the total>0 check)
+        }
 
         lcd.clear();
         lcd.setCursor(0, 0);
@@ -365,12 +399,21 @@ pill_data* find_pill_by_node(int node_id) {
     return NULL;
 }
 
+// Schedule source for hub_comms: returns the weekly schedule for an assigned
+// node, or NULL. Used to re-ASSIGN a rebooted clip that re-HELLOs after losing
+// its RTC schedule on a cold power cycle.
+const week_schedule* schedule_for_node(int node_id) {
+    pill_data* pill = find_pill_by_node(node_id);
+    return pill ? &pill->schedule : NULL;
+}
+
 // Drain adherence events the clips reported and apply them to the pill list /
 // display. Called from the button loop and the top of loop() so events are
 // handled even while the UI is blocked on a button press.
 void handle_hub_events(void) {
     uint8_t type, node_id;
-    while (hub_comms_take_event(&type, &node_id)) {
+    uint16_t mv;
+    while (hub_comms_take_event(&type, &node_id, &mv)) {
         pill_data* pill;
         switch (type) {
         case MSG_TAKEN:
@@ -398,7 +441,9 @@ void handle_hub_events(void) {
         case MSG_MISSED:
             pill = find_pill_by_node(node_id);
             if (pill != NULL) {
-                pill->missed++;
+                if (pill->missed < 255) {   // saturate instead of wrapping uint8_t
+                    pill->missed++;
+                }
                 Serial.print("[hub] ");
                 Serial.print(pill->name);
                 Serial.print(" missed (now ");
@@ -418,7 +463,24 @@ void handle_hub_events(void) {
             lcd.setCursor(0, 1);
             lcd.print("Clip #");
             lcd.print((int)node_id);
-            delay(2000);   // transient warning; next redraw restores the view
+            // Non-blocking banner: it stays until the next menu redraw (button
+            // press / view exit). No delay(), so comms keep pumping meanwhile.
+            break;
+
+        case MSG_BATTERY:
+            Serial.printf("[hub] node #%d battery %u mV\n", (int)node_id, (unsigned)mv);
+            if (mv < BATTERY_LOW_MV) {
+                lcd.clear();
+                lcd.setCursor(0, 0);
+                lcd.print("Low battery!");
+                lcd.setCursor(0, 1);
+                lcd.print("Clip #");
+                lcd.print((int)node_id);
+                lcd.print(" ");
+                lcd.print((unsigned)mv);
+                lcd.print("mV");
+                // Non-blocking banner (see MSG_BOX_OPEN above).
+            }
             break;
         }
     }
@@ -589,6 +651,12 @@ void configure_day(day_schedule* day, const char* day_abbr) {
         snprintf(prompt, sizeof(prompt), "%s d%d min", day_abbr, i + 1);
         day->minutes[i] = (uint8_t)select_value(prompt, 0, 0, 55, 5);
     }
+
+    // Zero the unused slots so no stale bytes ride over the wire to the clip.
+    for (int i = day->count; i < MAX_INTAKES_PER_DAY; i++) {
+        day->hours[i] = 0;
+        day->minutes[i] = 0;
+    }
 }
 
 // Configure a full week. If every day shares the same schedule it is entered
@@ -714,6 +782,9 @@ void setup() {
         lcd.print("Restart hub");
         delay(2000);
     }
+
+    // Let the comms layer re-ASSIGN a rebooted clip from the pill list.
+    hub_comms_set_schedule_source(schedule_for_node);
 
     menu_head = setup_views();
 }

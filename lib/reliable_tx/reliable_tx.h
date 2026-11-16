@@ -53,7 +53,8 @@ typedef struct reliable_tx {
     // magic distinguishes a valid RTC-memory queue from a cold boot (zeroed).
     uint32_t magic;
     reliable_frame_t frames[RELIABLE_QUEUE_SIZE];
-    uint8_t  next_seq;              // monotonically increasing per-instance seq
+    uint8_t  next_seq;              // monotonically increasing per-instance seq (1..255)
+    uint8_t  crc;                   // checksum over frames + next_seq (validates RTC mem)
     uint32_t base_retry_ms;         // e.g. 1000
     uint32_t max_retry_ms;          // e.g. 30000 (retry forever at this cap)
     bool (*send_fn)(const uint8_t* dst, const uint8_t* data, uint8_t len);
@@ -88,6 +89,10 @@ void reliable_on_sent(reliable_tx_t* t, const uint8_t* mac, bool ok);
 
 // Handle an application ACK carrying `seq`: free the matching frame.
 void reliable_on_ack(reliable_tx_t* t, uint8_t seq);
+
+// Recompute and store the queue checksum (frames + next_seq). Call after
+// restoring a persisted queue from NVS so reliable_init accepts it.
+void reliable_seal(reliable_tx_t* t);
 
 #ifdef __cplusplus
 }

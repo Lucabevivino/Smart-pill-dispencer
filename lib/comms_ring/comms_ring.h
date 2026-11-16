@@ -34,8 +34,11 @@ typedef struct {
 
 typedef struct {
     comms_ring_slot_t slots[COMMS_RING_SIZE];
-    volatile uint8_t head;   // next write slot (producer: ESP-NOW callback)
-    volatile uint8_t tail;   // next read slot (consumer: main loop)
+    // NB: NOT volatile — access goes only through comms_ring_push/pop, which use
+    // __atomic builtins for the acquire/release ordering this cross-core handoff
+    // needs on the dual-core Hub (producer = ESP-NOW task, consumer = main loop).
+    uint8_t head;   // next write slot (producer: ESP-NOW callback)
+    uint8_t tail;   // next read slot (consumer: main loop)
 } comms_ring_t;
 
 // Push one frame (copied). Drops the frame and returns false when full.
