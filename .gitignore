@@ -12,3 +12,6 @@ CLAUDE.md
 # Firebase service account credentials
 *.json
 !**/.vscode/*.json
+*.db
+__pycache__/
+.DS_Store
