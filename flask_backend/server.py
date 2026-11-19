@@ -20,16 +20,27 @@ app = Flask(__name__)
 @app.route('/log_pill', methods=['POST'])
 def log_pill():
     # Receive data from ESP
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    
+    # Extract fields with safe defaults/handling
+    payload = {
+        'device_id': data.get('device_id', 'unknown'),
+        'slot_id': data.get('slot_id'),
+        'clip_state': data.get('clip_state'),
+        'sensor_timestamp': data.get('sensor_timestamp')
+    }
     
     # 3. Save the data to Firebase Firestore in a collection called 'pill_logs'
-    db.collection('pill_logs').add({
-        'action': data.get('action'),
-        'device_id': data.get('device_id'),
-        'timestamp': firestore.SERVER_TIMESTAMP # Automatically uses Firebase's exact time
-    })
+    firestore_data = dict(payload)
+    firestore_data['server_timestamp'] = firestore.SERVER_TIMESTAMP
+    db.collection('pill_logs').add(firestore_data)
     
-    return jsonify({"status": "success"}), 200
+    # Return saved payload (excluding the server timestamp sentinel) for easy debugging
+    return jsonify({
+        "status": "success",
+        "data": payload,
+        "saved_payload": payload
+    }), 200
 
 if __name__ == '__main__':
     # Run the server on your local network
