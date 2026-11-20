@@ -1,157 +1,212 @@
-# MedClip – smart medicine clip
+# MedClip – Smart Medicine Clip (Firestore Backend)
 
-A clip goes on each medicine box. When the patient takes a tablet the clip
-tells the central hub, the hub tells this server, and the web app shows it on
-the dashboard and calendar.
+A clip goes on each medicine box. When the patient takes a tablet, the clip reports to the central hub, the hub synchronizes with Google Cloud Firebase Firestore (`pill_logs`, `medicines`, `clips`, `intakes`), and the web app displays adherence on the dashboard and calendar.
 
 ```
-medclip/
+web/
 ├── frontend/          the web app (served by the server)
 │   ├── index.html     pages: login, dashboard, calendar, medicines, setup
 │   ├── styles.css
 │   └── app.js
 ├── server/
-│   ├── server.py         server: API + database + serves the web app
-│   └── simulate_clip.py  pretends to be the hub, for testing without hardware
+│   ├── server.py         server: REST API + Firestore database + serves frontend
+│   ├── run_dev.ps1       Windows PowerShell dev launcher
+│   ├── run_dev.sh        macOS/Linux dev launcher
+│   └── simulate_clip.py  tests clip/hub events without physical hardware
 └── README.md
 ```
 
-Needs only **Python 3.9 or newer**. Nothing to install.
+## 1. Prerequisites & Setup
 
-## 1. Start the server
+Needs **Python 3.9 or newer** and `firebase-admin`:
 
 ```bash
-cd server
-python3 server.py --seed     # --seed adds one example clip with one medicine; leave it out for an empty start
+pip install firebase-admin
 ```
 
-Open **http://localhost:8000** and sign in with:
+### Firebase Credentials Discovery
+The server dynamically searches for your private Firebase Admin SDK `.json` key in any of the following locations:
+1. `flask_backend/` (recommended)
+2. Repository root (`Smart-pill-dispencer/`)
+3. `web/server/` or `web/`
+4. The path specified in `$env:GOOGLE_APPLICATION_CREDENTIALS` (Windows) or `export GOOGLE_APPLICATION_CREDENTIALS` (macOS/Linux).
 
-- email `patient@medclip.local`
-- password `medclip123`
+> **Security Notice:** The `.json` credentials file contains private keys and must **never** be committed to GitHub. It is protected by `.gitignore`.
 
-Other phones and laptops on the same Wi-Fi can open `http://<this-computer's-IP>:8000`.
-Everything is stored in `server/medclip.db`. Delete that file to start over.
+---
 
-## 2. Pair clips (Setup page)
+## 2. Quick Start: Local Development
 
-1. Switch a clip on and put it on a medicine box. When it joins the Wi-Fi, the
-   hub reports it and it appears in Setup within a few seconds, named *Clip 1*,
-   *Clip 2*, ... (or whatever name the hub gives it).
-2. In **Setup**, pick the clip, type the **medicine name**, the **dose times** and the **days**.
-   *More details* (strength, tablets in the box, instructions...) is optional.
+The server is a unified host: it serves the web app frontend (`index.html`, `styles.css`, `app.js`) and handles all API routes (`/api/*`, `/log_pill`) on the **same port (8000)**. This prevents all cross-origin (CORS) and routing discrepancies.
+
+### Terminal 1: Start the Unified Server
+
+**Using PowerShell (Windows):**
+```powershell
+# From web/server folder:
+.\run_dev.ps1
+
+# Or with custom port:
+.\run_dev.ps1 -Port 8000
+```
+
+**Or directly with Python:**
+```bash
+cd web/server
+python server.py --seed
+```
+
+**Using Bash (macOS / Linux):**
+```bash
+./run_dev.sh
+```
+
+Open **http://localhost:8000** in your browser and sign in with:
+- **Email:** `patient@medclip.local`
+- **Password:** `medclip123`
+
+---
+
+### Terminal 2: Test & Simulate Events
+
+Keep the server running in Terminal 1, then open a second terminal to simulate clip events:
+
+```bash
+cd web/server
+
+# Announce a new clip online -> immediately visible in Setup
+python simulate_clip.py on F00D01
+
+# Simulate dose taken now (opened clip on slot 1)
+python simulate_clip.py taken A1F3B2
+
+# Simulate specific timestamp matching schedule (e.g. 08:00 or 20:00)
+python simulate_clip.py taken A1F3B2 --at 2026-11-20T20:00:00
+
+# Test unauthenticated ESP32 hardware flow on /api/clip-events
+python simulate_clip.py taken A1F3B2 --no-key
+
+# Test direct hardware /log_pill endpoint
+python simulate_clip.py taken ESP_001 --slot 1 --endpoint log_pill
+```
+
+---
+
+## 3. Pair Clips (Setup Page)
+
+1. Switch a clip on and attach it to a pill box. As soon as it announces to the hub, it appears in **Setup** (named *Clip 1*, *Clip 2*, ...).
+2. Pick the clip, enter the **medicine name**, **dose times**, and **schedule days**.
 3. Click **Pair clip**.
 
-**Unpair** frees the clip again (and deletes that medicine's dose history).
-**Forget** removes a free clip that no longer exists.
+- **Unpair:** Frees the clip and clears that medicine's intake history.
+- **Forget:** Removes an unassigned clip that no longer exists.
 
-## 3. What the central hub sends
+---
 
-All messages are `POST` with JSON and the header `X-Hub-Key: change-me`
-(change the key by starting the server with `MEDCLIP_HUB_KEY=your-secret python3 server.py`).
+## 4. Hardware & Hub Communication
 
-### A clip switched on / joined the Wi-Fi
+The server supports two ingestion endpoints. Both endpoints automatically record telemetry in Cloud Firestore in the **`pill_logs`** collection using our agreed hardware schema:
+- `device_id` (string, default: `"unknown"`)
+- `slot_id` (integer / null)
+- `clip_state` (string: `"opened"` or `"closed"`)
+- `sensor_timestamp` (ISO string from hardware)
+- `server_timestamp` (`firestore.SERVER_TIMESTAMP`)
 
+### Authentication & Header Policy
+
+| Endpoint | `X-Hub-Key` Header | Unauthenticated ESP32 Behavior |
+| :--- | :--- | :--- |
+| **`POST /log_pill`** | Not required | **Succeeds (200 OK)**. Designed for direct ESP32 hardware without auth overhead. |
+| **`POST /api/clip-events`** | Optional during testing | **Succeeds (200 OK / 202)** if omitted. Validated against `MEDCLIP_HUB_KEY` if provided (403 only on mismatched key). |
+| **`POST /api/clips/announce`**| Optional during testing | **Succeeds (200 OK)** if omitted. Validated if provided. |
+
+> **Production note:** To secure hub endpoints in production, start the server with `MEDCLIP_HUB_KEY=your-secret python server.py`.
+
+---
+
+### Endpoint: `POST /log_pill` (ESP32 Hardware Direct)
+Header: `Content-Type: application/json` (no `X-Hub-Key` required)
+```json
+{
+  "device_id": "ESP_001",
+  "slot_id": 1,
+  "clip_state": "opened",
+  "sensor_timestamp": "2026-11-20T15:30:00"
+}
 ```
-POST http://<server-ip>:8000/api/clips/announce
-{"clip_id": "A1F3B2"}
+Reply (`200 OK`):
+```json
+{
+  "status": "success",
+  "data": {
+    "device_id": "ESP_001",
+    "slot_id": 1,
+    "clip_state": "opened",
+    "sensor_timestamp": "2026-11-20T15:30:00"
+  },
+  "saved_payload": { ... },
+  "result": "recorded"
+}
 ```
 
-- `clip_id`: any unique id for the clip (its MAC address, chip id, ...). Case, spaces and colons don't matter.
-- Optional `"name": "Clip 3"`. If the hub doesn't send a name, the server picks the next free *Clip N*.
-- The hub can also send all clips at once: `{"clips": [{"clip_id": "A1F3B2"}, {"clip_id": "B77C10", "name": "Clip 2"}]}`
-- Sending it again is fine (it updates *last seen*), so the hub can repeat it every few minutes as a heartbeat.
+---
 
-Reply: `{"clips": [{"clip_id": "A1F3B2", "name": "Clip 1", "paired_with": null}]}`
-
-### A clip's medicine was taken
-
-```
-POST http://<server-ip>:8000/api/clip-events
-{"clip_id": "A1F3B2"}
-```
-
-- Optional `"taken_at": "2026-11-19T08:05:00"`, only if the hub knows the real time (NTP).
-  Without it the server uses the time the message arrives.
-- Send it **once per dose**, when the clip decides the tablet was taken. Not a stream of sensor readings.
-
-| Situation | Reply |
-|---|---|
-| A dose of the paired medicine is due (60 min before to 3 h after) | `200 {"status":"recorded", "clip":"Clip 1", "medicine":"Metformin", "scheduled":"...", "minutesFromSchedule":4}` |
-| Paired, but no dose due now (or already taken) | `200 {"status":"no_scheduled_dose"}` |
-| Clip not paired yet | `202 {"status":"not_paired"}` (the clip is added to Setup if it was new) |
-| Wrong key | `403` |
-
-On time = taken within 30 min of schedule; missed = nothing 3 h after.
-(The older `/api/chip-events` with `chip_id` still works.)
-
-### Test without hardware
-
-```bash
-cd server
-python3 simulate_clip.py on F00D01       # a new clip switches on -> appears in Setup
-python3 simulate_clip.py taken A1F3B2    # Clip 1's medicine taken now
-python3 simulate_clip.py taken A1F3B2 --at 2026-11-19T08:05
+### Endpoint: `POST /api/clip-events` (Central Hub / ESP32)
+Headers: `Content-Type: application/json` (`X-Hub-Key: change-me` optional)
+```json
+{
+  "clip_id": "A1F3B2",
+  "device_id": "A1F3B2",
+  "slot_id": 1,
+  "clip_state": "opened",
+  "taken_at": "2026-11-20T15:30:00"
+}
 ```
 
-### ESP32 example (Arduino IDE)
+---
 
+### ESP32 C++ Code Example (Arduino IDE / PlatformIO)
 ```cpp
 #include <WiFi.h>
 #include <HTTPClient.h>
 
 const char* WIFI_SSID  = "your-wifi";
 const char* WIFI_PASS  = "your-password";
-const char* SERVER     = "http://192.168.1.50:8000";   // computer running server.py
-const char* HUB_KEY    = "change-me";
+// Both endpoints work seamlessly on the same port:
+const char* SERVER_URL = "http://192.168.1.50:8000/log_pill"; 
+// const char* SERVER_URL = "http://192.168.1.50:8000/api/clip-events";
 
-int post(const String& path, const String& json) {
+void sendPillEvent(const char* deviceId, int slotId, const char* state, const char* timestamp) {
   HTTPClient http;
-  http.begin(String(SERVER) + path);
+  http.begin(SERVER_URL);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Hub-Key", HUB_KEY);
+
+  String json = "{\"device_id\":\"" + String(deviceId) + 
+                "\",\"slot_id\":" + String(slotId) + 
+                ",\"clip_state\":\"" + String(state) + 
+                "\",\"sensor_timestamp\":\"" + String(timestamp) + "\"}";
+
   int code = http.POST(json);
-  Serial.printf("%s -> %d %s\n", path.c_str(), code, http.getString().c_str());
+  Serial.printf("Response code: %d, body: %s\n", code, http.getString().c_str());
   http.end();
-  return code;
 }
-
-// call when a clip connects to the hub
-void clipOnline(const String& clipId) { post("/api/clips/announce", "{\"clip_id\":\"" + clipId + "\"}"); }
-
-// call when a clip detects its medicine was taken
-void medicineTaken(const String& clipId) { post("/api/clip-events", "{\"clip_id\":\"" + clipId + "\"}"); }
-
-void setup() {
-  Serial.begin(115200);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) delay(300);
-}
-
-void loop() { /* call clipOnline(...) / medicineTaken(...) from your clip logic */ }
 ```
 
-## API used by the web app
+---
 
-Need `Authorization: Bearer <token>` from `/api/login` (except `/api/status`).
+## 5. Frontend REST API Reference
 
-| Method & path | Purpose |
+All user requests require `Authorization: Bearer <token>` from `/api/login` (except `/api/status`).
+
+| Method & Path | Description |
 |---|---|
-| `GET /api/status` | server online, last clip signal, number of clips / free clips |
-| `POST /api/login` `{email, password}` | returns `{token, user}` |
-| `GET /api/clips` | clips the hub reported, with the medicine each is paired with |
-| `DELETE /api/clips/<clip_id>` | forget a free clip |
-| `GET /api/medicines` | paired medicines (with `clipId`, `clipName`) |
-| `POST /api/medicines` / `PUT /api/medicines/<id>` | pair a clip with a medicine / edit |
-| `DELETE /api/medicines/<id>` | unpair (clip becomes free, history deleted) |
-| `GET /api/intakes?from=YYYY-MM-DD&to=YYYY-MM-DD` | doses recorded by clips or ticked by hand |
-| `POST /api/intakes` `{medId, scheduled, takenAt or null}` | patient ticks / unticks a dose |
-
-## Notes
-
-- The server and the browser should be in the same time zone: dose times are local times.
-- Sign-ins are kept in memory, so everyone signs in again after the server restarts.
-- Opening `frontend/index.html` directly (without the server) runs the app on demo data.
-- Student prototype: plain HTTP on the local network. Add HTTPS before using it anywhere public.
-- The Flutter app from the earlier version is not included: it still uses typed chip numbers
-  and doesn't work with this server version.
+| `GET /api/status` | Server health, last clip signal, total and free clips |
+| `POST /api/login` | `{email, password}` -> returns `{token, user}` |
+| `GET /api/clips` | List clips and paired medicine names |
+| `DELETE /api/clips/<clip_id>` | Remove an unassigned clip |
+| `GET /api/medicines` | List all medicines with schedule, stock, and last signal |
+| `POST /api/medicines` | Create a new paired medicine |
+| `PUT /api/medicines/<id>` | Update an existing medicine's schedule or details |
+| `DELETE /api/medicines/<id>` | Unpair medicine and remove its intake history |
+| `GET /api/intakes?from=YYYY-MM-DD&to=YYYY-MM-DD` | Get recorded doses in date range |
+| `POST /api/intakes` | `{medId, scheduled, takenAt}` -> Manual patient tick/untick |
