@@ -101,12 +101,15 @@ Data is saved to the **`pill_logs`** collection in Firebase Firestore. Each docu
 ## 4. Teammate Reference Notes
 
 ### For the Hardware Teammate (ESP32 / Arduino / PlatformIO)
-1. Ensure the ESP32 is connected to the same Wi-Fi network as the laptop running the Flask backend.
-2. Define the server URL matching your laptop's current local IP:
+1. Ensure the ESP32 is connected to the same Wi-Fi network as the laptop running the backend (must be 2.4 GHz; ESP32 cannot connect to 5 GHz).
+2. Create `include/wifi_config.h` with your local Wi-Fi credentials (`WIFI_SSID` / `WIFI_PASSWORD`).
+3. Define the server URL matching your laptop's current local IP (run `ipconfig` on Windows):
    ```cpp
-   const char* flaskServerURL = "http://192.168.x.x:5000/log_pill";
+   const char* flaskServerURL = "http://192.168.1.50:8000/log_pill"; // or port 5000 for standalone backend
    ```
-3. When the clip opens or closes, make an HTTP POST request:
+4. **Bench Prototyping Tip:** In `src/Clip/main.cpp`, set `#define DEEP_SLEEP_ON 0` while developing via USB serial so the board does not drop the COM connection.
+5. **LCD Contrast:** On the Hub 16x2 LCD, rotate the 10 kΩ potentiometer screw wired to pin 3 ($V_0$) to adjust screen contrast if characters don't appear.
+6. When the clip opens or closes, make an HTTP POST request:
    ```cpp
    #include <HTTPClient.h>
 
@@ -114,9 +117,9 @@ Data is saved to the **`pill_logs`** collection in Firebase Firestore. Each docu
    http.begin(flaskServerURL);
    http.addHeader("Content-Type", "application/json");
 
-   String jsonPayload = "{\"device_id\":\"ESP_001\",\"slot_id\":1,\"clip_state\":\"opened\",\"sensor_timestamp\":\"2026-11-19T15:30:00\"}";
+   String jsonPayload = "{\"device_id\":\"ESP_001\",\"slot_id\":1,\"clip_state\":\"opened\",\"sensor_timestamp\":\"2026-11-20T15:30:00\"}";
    int httpResponseCode = http.POST(jsonPayload);
-
+   Serial.printf("Server response: %d\n", httpResponseCode);
    http.end();
    ```
 

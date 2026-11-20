@@ -192,6 +192,9 @@ void sendPillEvent(const char* deviceId, int slotId, const char* state, const ch
 }
 ```
 
+> [!TIP]
+> **Complete Hardware Setup Guide:** For physical board deployment, refer to [Part 2 of the Root README](../../README.md#part-2-using-the-physical-hardware-esp32-hub--clip). It contains the complete pre-flight checklist: creating `include/wifi_config.h`, LCD contrast pot calibration, disabling deep sleep during USB bench testing (`DEEP_SLEEP_ON 0`), IR sensor margin calibration, and the hardware troubleshooting matrix.
+
 ---
 
 ## 5. Frontend REST API Reference
